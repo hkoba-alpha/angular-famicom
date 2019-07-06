@@ -7,6 +7,8 @@
 
 # dependencies
 /node_modules
+/projects/fam-canvas/node_modules
+/projects/fam-canvas/src/assets/famicom.js
 
 # IDEs and editors
 /.idea

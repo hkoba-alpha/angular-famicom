@@ -16,6 +16,14 @@
     "lib": [
       "es2017",
       "dom"
-    ]
+    ],
+    "paths": {
+      "fam-canvas": [
+        "dist/fam-canvas"
+      ],
+      "fam-canvas/*": [
+        "dist/fam-canvas/*"
+      ]
+    }
   }
 }
