@@ -1,3 +1,5 @@
+import FamUtil from "./fam-util";
+
 export interface PPUConfig2000 {
     // 0:8x8, 1:8x16
     spriteSize?: 0 | 1;
@@ -50,6 +52,10 @@ export interface IFamPPU {
     setConfig2001(config: PPUConfig2001): void;
     setScroll(sx: number, sy: number): void;
     readState(): PPUState;
+
+    setMirrorMode(mode: "vertical" | "horizontal" | "four"): void;
+
+    reset(): void;
 }
 
 /**
@@ -103,17 +109,10 @@ export interface FamData {
 export interface IFamROM {
     hBlank?(data: FamData, line: number): void;
     vBlank?(data: FamData): void;
+    init?(data: FamData, type: "power" | "reset", param?: any): void;
 }
 
 /**
  * Workerへ送ることができる閉じた関数
  */
-export type FamFunction = () => IFamROM;
-
-/**
- * 起動ロム
- * @param func 
- */
-export function BootRom(func: Function) {
-    console.log(func);
-}
+export type FamFunction = (util?: FamUtil) => IFamROM;

@@ -1,5 +1,5 @@
 const ProgressPlugin = require('webpack/lib/ProgressPlugin');
-const { NoEmitOnErrorsPlugin } = require('webpack');
+const { NoEmitOnErrorsPlugin, ProvidePlugin } = require('webpack');
 const { AngularCompilerPlugin } = require('@ngtools/webpack')
 module.exports = {
   'mode': 'production',
@@ -54,6 +54,10 @@ module.exports = {
     new AngularCompilerPlugin({
       'tsConfigPath': './src/tsconfig.worker.json',
       'entryModule': './src/worker/fam-worker.ts'
+    }),
+    new ProvidePlugin({
+      '__assign': ['tslib', '__assign'],
+      '__extends': ['tslib', '__extends'],
     })
   ]
 };

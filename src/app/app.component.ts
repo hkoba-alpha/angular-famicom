@@ -1,8 +1,9 @@
 import { Component, NgModuleFactoryLoader, OnInit } from '@angular/core';
 import { Myrom } from './fam-rom/myrom';
 import { FamCanvasService, FamMachine } from 'projects/fam-canvas/src/public_api';
-import { IFamROM, BootRom, FamData } from 'projects/fam-canvas/src/worker/fam-api';
-import { FamWorkerImpl } from 'projects/fam-canvas/src/worker/fam-impl';
+import { IFamROM, FamData } from 'projects/fam-canvas/src/worker/fam-api';
+import FamUtil from 'projects/fam-canvas/src/worker/fam-util';
+import { NesEmuRom } from 'projects/fam-canvas/src/lib/rom/nes-emu-rom';
 
 let myCode = function () {
   class Base {
@@ -44,12 +45,31 @@ export class AppComponent implements OnInit {
   }
 
   ngOnInit(): void {
-    console.log(myCode);
-    this.famMachine = this.famService.createMachine(() => {
+    /*
+    this.famMachine = this.famService.createMachine((util: FamUtil) => {
+      //import * as NesRomData from 'projects/fam-canvas/src/worker/fam-util';
+      //require("projects/fam-canvas/src/worker/fam-util");
       //@BootRom
       let x = 0;
       let y = 0;
       class TestRom implements IFamROM {
+        init(fam: FamData, type, param) {
+          console.log(param);
+          fam.ppu.setConfig2000({
+            bgPattern: 0,
+            spritePattern: 0
+          });
+          fam.ppu.setMirrorMode("horizontal");
+          util.load("/assets/smario.nes").then(res => {
+            console.log(res);
+            if (res.chrSize > 0) {
+              fam.ppu.write(0, res.getChr(0, res.chrSize));
+            }
+          }, err => {
+            console.log(err);
+          });
+        }
+
         vBlank(fam: FamData) {
           fam.ppu.setScroll(x, y);
           x = (x + 1) & 255;
@@ -58,6 +78,10 @@ export class AppComponent implements OnInit {
       }
       return new TestRom();
     }, true);
+    this.famMachine.setInitParam({ msg: "test param", data: [1,2,3]});
+    */
+   this.famMachine = this.famService.createMachine(NesEmuRom, false);
+   this.famMachine.setInitParam("/assets/smario.nes");
   }
 
   onStart(): void {

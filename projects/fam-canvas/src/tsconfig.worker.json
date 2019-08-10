@@ -8,6 +8,6 @@
       "test.ts",
       "main.ts",
       "**/*.spec.ts",
-      "**/app/**/*.ts"
+      "**/lib/**/*.ts"
     ]
   }

@@ -13,7 +13,7 @@ export enum FamButton {
  * マシン制御メッセージ
  */
 export interface FamRequestMsg {
-    type: "frame" | "skip-frame" | "reset" | "script" | "function" | "shutdown";
+    type: "frame" | "skip-frame" | "reset" | "script" | "function" | "shutdown" | "param";
     button: number[];
     option?: any;
 }

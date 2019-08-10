@@ -2,6 +2,7 @@ import { Injectable, EventEmitter } from '@angular/core';
 import { FamResponseMsg, FamRequestMsg, FamButton } from '../worker/fam-msg';
 import { IFamROM, FamFunction } from '../worker/fam-api';
 import { FamWorkerImpl } from '../worker/fam-impl';
+import FamUtil from '../worker/fam-util';
 
 export const famKeyConfig: { [key: string]: { pad: number, button: number } } = {
   "ArrowUp": {
@@ -65,7 +66,15 @@ export abstract class FamMachine {
     this.audioSrc = this.audioContext.createBufferSource();
     this.audioSrc.buffer = buf;
     this.audioSrc.loop = true;
-    this.audioSrc.connect(this.audioContext.destination);
+    //this.audioSrc.connect(this.audioContext.destination);
+  }
+
+  public setInitParam(param: any): void {
+    this.request({
+      type: "param",
+      button: [],
+      option: param
+    });
   }
 
   public start(): void {
@@ -78,11 +87,11 @@ export abstract class FamMachine {
       }
       this.runFlag = true;
       func();
-      this.audioSrc.start();
+      //this.audioSrc.start();
     }
   }
   public stop(): void {
-    this.audioSrc.stop();
+    //this.audioSrc.stop();
     this.runFlag = false;
   }
   public reset(): void {
@@ -137,7 +146,7 @@ class WebMachine extends FamMachine {
     super();
     let famRom: IFamROM;
     if (typeof rom == "function") {
-      famRom = rom();
+      famRom = rom(new FamUtil());
     } else if (typeof rom == "object") {
       famRom = rom;
     }
@@ -146,7 +155,9 @@ class WebMachine extends FamMachine {
 
   protected request(req: FamRequestMsg): void {
     let res = this.worker.execute(req);
-    super.response(res);
+    if (res) {
+      super.response(res);
+    }
   }
 }
 

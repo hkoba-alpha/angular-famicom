@@ -1,7 +1,45 @@
 import { IFamROM, IFamPPU, PPUConfig2000, PPUConfig2001, PPUState } from "./fam-api";
 import { FamRequestMsg, FamResponseMsg } from "./fam-msg";
 
-const famPaletteRGB = [
+const famPaletteRGB = [0x75, 0x75, 0x75,
+    0x27, 0x1B, 0x8F, 0x00, 0x00, 0xAB,
+    0x47, 0x00, 0x9F, 0x8F, 0x00, 0x77,
+    0xAB, 0x00, 0x13, 0xA7, 0x00, 0x00,
+    0x7F, 0x0B, 0x00, 0x43, 0x2F, 0x00,
+    0x00, 0x47, 0x00, 0x00, 0x51, 0x00,
+    0x00, 0x3F, 0x17, 0x1B, 0x3F, 0x5F,
+    0x00, 0x00, 0x00, 0x05, 0x05, 0x05,
+    0x05, 0x05, 0x05,
+
+    0xBC, 0xBC, 0xBC, 0x00, 0x73, 0xEF,
+    0x23, 0x3B, 0xEF, 0x83, 0x00, 0xF3,
+    0xBF, 0x00, 0xBF, 0xE7, 0x00, 0x5B,
+    0xDB, 0x2B, 0x00, 0xCB, 0x4F, 0x0F,
+    0x8B, 0x73, 0x00, 0x00, 0x97, 0x00,
+    0x00, 0xAB, 0x00, 0x00, 0x93, 0x3B,
+    0x00, 0x83, 0x8B, 0x11, 0x11, 0x11,
+    0x09, 0x09, 0x09, 0x09, 0x09, 0x09,
+
+    0xFF, 0xFF, 0xFF, 0x3F, 0xBF, 0xFF,
+    0x5F, 0x97, 0xFF, 0xA7, 0x8B, 0xFD,
+    0xF7, 0x7B, 0xFF, 0xFF, 0x77, 0xB7,
+    0xFF, 0x77, 0x63, 0xFF, 0x9B, 0x3B,
+    0xF3, 0xBF, 0x3F, 0x83, 0xD3, 0x13,
+    0x4F, 0xDF, 0x4B, 0x58, 0xF8, 0x98,
+    0x00, 0xEB, 0xDB, 0x66, 0x66, 0x66,
+    0x0D, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D,
+
+    0xFF, 0xFF, 0xFF, 0xAB, 0xE7, 0xFF,
+    0xC7, 0xD7, 0xFF, 0xD7, 0xCB, 0xFF,
+    0xFF, 0xC7, 0xFF, 0xFF, 0xC7, 0xDB,
+    0xFF, 0xBF, 0xB3, 0xFF, 0xDB, 0xAB,
+    0xFF, 0xE7, 0xA3, 0xE3, 0xFF, 0xA3,
+    0xAB, 0xF3, 0xBF, 0xB3, 0xFF, 0xCF,
+    0x9F, 0xFF, 0xF3, 0xDD, 0xDD, 0xDD,
+    0x11, 0x11, 0x11, 0x11, 0x11, 0x11];
+
+/*
+[
     124, 124, 124,
     0, 0, 252,
     0, 0, 188,
@@ -66,7 +104,7 @@ const famPaletteRGB = [
     248, 216, 248,
     0, 0, 0,
     0, 0, 0
-];
+];*/
 
 class FamPPUImpl implements IFamPPU {
     // 0000-0FFF, 1000-1FFF
@@ -92,11 +130,15 @@ class FamPPUImpl implements IFamPPU {
     private rgbColor: Uint32Array;
     private lastBgColor: number = -1;
 
-    constructor(private mode: "vertical" | "horizontal" | "both" = "vertical") {
+    constructor(private mode: "vertical" | "horizontal" | "four" = "vertical") {
+        this.reset();
+    }
+    setMirrorMode(mode: "vertical" | "horizontal" | "four"): void {
+        this.mode = mode;
         this.reset();
     }
 
-    private reset(): void {
+    public reset(): void {
         this.config2000 = {
             bgPattern: 0,
             spritePattern: 0,
@@ -104,8 +146,8 @@ class FamPPUImpl implements IFamPPU {
             spriteSize: 0
         };
         this.config2001 = {
-            bg: true,
-            sprite: true,
+            bg: false,
+            sprite: false,
             bgMask: 0,
             spriteMask: 0,
             bgColor: 0
@@ -133,13 +175,16 @@ class FamPPUImpl implements IFamPPU {
         };
         this.scrollX = 0;
         this.scrollY = 0;
+        this.lastBgColor = -1;
         // dummy
+        /*
         for (let addr = 0; addr < 0x3fff; addr++) {
             this.write(addr, (Math.random() * 256) & 255);
         }
         for (let addr = 0; addr < 256; addr++) {
             this.writeSprite(addr, (Math.random() * 256) & 255);
         }
+        */
         this.checkPalette();
     }
 
@@ -216,10 +261,10 @@ class FamPPUImpl implements IFamPPU {
     }
 
     setConfig2000(config: PPUConfig2000): void {
-        this.config2000 = Object.assign({}, config, this.config2000);
+        this.config2000 = Object.assign({}, this.config2000, config);
     }
     setConfig2001(config: PPUConfig2001): void {
-        this.config2001 = Object.assign({}, config, this.config2001);
+        this.config2001 = Object.assign({}, this.config2001, config);
         this.checkPalette();
     }
     setScroll(sx: number, sy: number): void {
@@ -262,6 +307,7 @@ class FamPPUImpl implements IFamPPU {
                     b >>= 1;
                 }
             }
+            //console.log("[" + ix + "]=rgb(" + r + "," + g + "," + b + ")");
             this.rgbColor[ix] = 0xff000000 | (b << 16) | (g << 8) | r;
         }
         console.log(this.rgbColor);
@@ -272,7 +318,7 @@ class FamPPUImpl implements IFamPPU {
             // BG
             if (buf) {
                 // 設定する
-                let bg = this.getColor(this.palette[16]) & 63;
+                let bg = this.getColor(this.palette[16] & 63);
                 let nmix = this.config2000.nameTable;
                 let yy = line + this.scrollY;
                 if (yy >= 240) {
@@ -296,7 +342,7 @@ class FamPPUImpl implements IFamPPU {
                 for (let lx = (this.scrollX >> 3); lx < 64; lx++) {
                     let ch = this.nameTable[nmix ^ (lx < 32 ? 0 : 1)][(ly << 5) | (lx & 31)];
                     let pat = this.getLinePattern(this.config2000.bgPattern, ch, dy);
-                    let palix = pal[lx >> 1];
+                    let palix = pal[lx >> 1] << 2;
                     for (let ax = 0; ax < 8; ax++) {
                         let x = (lx << 3) + ax - this.scrollX;
                         if (x < 0) {
@@ -316,7 +362,7 @@ class FamPPUImpl implements IFamPPU {
                             buf[bufix + x] = this.getColor(this.spriteBuf[x] & 63);
                         } else {
                             // none
-                            buf[bufix + x] = this.getColor(bg);
+                            buf[bufix + x] = bg;
                         }
                     }
                 }
@@ -332,7 +378,7 @@ class FamPPUImpl implements IFamPPU {
             }
             for (let i = 0; i < 64; i++) {
                 let y = this.spriteTable[i << 2];
-                if (y <= line && y + sz > line) {
+                if (((line - y) & 0xff) < sz) {
                     // Hit
                     if (i == 0) {
                         this.state.spriteHit = true;
@@ -344,7 +390,7 @@ class FamPPUImpl implements IFamPPU {
                     }
                     if (line >= 7 && line < 223 && this.config2001.sprite) {
                         // y-1,patIx, VHP000CC P=0:前,1:後ろ
-                        let dy = line - y;
+                        let dy = (line - y) & 255;
                         let flag = this.spriteTable[(i << 2) + 2];
                         if (flag & 0x80) {
                             // 上下反転
@@ -376,6 +422,13 @@ class FamPPUImpl implements IFamPPU {
         } else if (line == 261) {
             // 最後
             this.state.spriteHit = false;
+        } else {
+            if (line == 240) {
+                this.state.vblank = true;
+            }
+            if (!this.state.spriteHit && line >= this.spriteBuf[0]) {
+                this.state.spriteHit = true;
+            }
         }
     }
 
@@ -406,16 +459,35 @@ class FamPPUImpl implements IFamPPU {
 
 export class FamWorkerImpl {
     private famPpu: FamPPUImpl;
+    private initType: "power" | "reset" = "power";
+    private initParam: any;
 
     constructor(private famRom: IFamROM) {
         this.famPpu = new FamPPUImpl();
+    }
 
+    public reset(): void {
+        this.initType = "reset";
+        this.famPpu = new FamPPUImpl();
     }
 
     public execute(req: FamRequestMsg): FamResponseMsg {
+        if (req.type == "param") {
+            this.initParam = req.option;
+            return null;
+        }
         let buf: Uint32Array;
         if (req.type == "frame") {
             buf = new Uint32Array(256 * 224);
+        }
+        if (this.initType) {
+            if (this.famRom.init) {
+                this.famRom.init({
+                    ppu: this.famPpu,
+                    apu: null
+                }, this.initType, this.initParam);
+            }
+            this.initType = null;
         }
         for (let line = 0; line < 262; line++) {
             if (line == 240 && this.famRom.vBlank) {
