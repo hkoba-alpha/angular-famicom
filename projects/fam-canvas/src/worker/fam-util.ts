@@ -1,8 +1,9 @@
 import { FamData, IFamPPU } from "./fam-api";
-import { debuglog } from "util";
 
 const PRG_SIZE = 0x4000;
 const CHR_SIZE = 0x2000;
+
+var debugLogFlag = false;
 
 /**
  * NES-ROMクラス
@@ -116,11 +117,19 @@ class WramMemory implements IFamMemory {
 class PpuMemory implements IFamMemory {
     private nmiFlag: boolean;
     private ppuAddr: number;
+    private ppuNextAddr: number;
     private ppuInc: number = 1;
-    private ppuFlag: boolean;
     private spriteAddr: number;
     private scrollIx: number;
     private scrollPos: number[];
+    private ppuReadData: number;
+
+    private reg: {
+        v: number;
+        t: number;
+        x: number;
+        w: number;
+    };
 
     constructor(private famPpu: IFamPPU, private parent: IFamMemory) {
         this.reset();
@@ -131,10 +140,16 @@ class PpuMemory implements IFamMemory {
         this.nmiFlag = false;
         this.ppuAddr = 0;
         this.ppuInc = 1;
-        this.ppuFlag = false;
         this.spriteAddr = 0;
         this.scrollIx = 0;
         this.scrollPos = [0, 0];
+        this.ppuReadData = 0;
+        this.reg = {
+            v: 0,
+            t: 0,
+            x: 0,
+            w: 0
+        };
     }
 
     get isNmiEnabled(): boolean {
@@ -157,6 +172,7 @@ class PpuMemory implements IFamMemory {
                 } else {
                     this.ppuInc = 1;
                 }
+                this.reg.t = (this.reg.t & 0x73ff) | ((val & 3) << 10);
                 break;
             case 1: // 2001
                 this.famPpu.setConfig2001({
@@ -176,30 +192,63 @@ class PpuMemory implements IFamMemory {
                 break;
             case 5: // 2005
                 this.scrollPos[this.scrollIx] = val;
-                this.scrollIx ^= 1;
-                if (!this.scrollIx) {
+                if (this.scrollIx) {
                     this.famPpu.setScroll(this.scrollPos[0], this.scrollPos[1]);
+                    if (this.scrollPos[0] && this.famPpu["config2000"].nameTable) {
+                        //debugLogFlag = true;
+                    }
                 }
+                this.scrollIx ^= 1;
+                if (this.reg.w) {
+                    // second
+                    this.reg.t = (this.reg.t & 0xc1f) | ((val & 7) << 12) | ((val & 0xf8) << 2);
+                } else {
+                    // first
+                    this.reg.t = (this.reg.t & 0x7fe0) | (val >> 3);
+                    this.reg.x = val & 7;
+                }
+                this.reg.w = this.reg.w ^ 1;
                 break;
             case 6: // 2006
-                if (this.ppuFlag) {
+                if (this.scrollIx) {
                     // 下位
-                    this.ppuAddr = (this.ppuAddr & 0xff00) | val;
+                    this.ppuNextAddr = (this.ppuNextAddr & 0xff00) | val;
+                    this.ppuAddr = this.ppuNextAddr;
+                    // nameTableも変更
+                    this.famPpu.setConfig2000({
+                        nameTable: (val & 0xc) >> 2
+                    });
                 } else {
                     // 上位
-                    this.ppuAddr = (this.ppuAddr & 0xff) | (val << 8);
+                    this.ppuNextAddr = (this.ppuNextAddr & 0xff) | (val << 8);
+                    if (val >= 0x40) {
+                        console.log("PPU OVER");
+                    }
                 }
-                this.ppuFlag = !this.ppuFlag;
+                if (this.reg.w) {
+                    // second
+                    this.reg.t = (this.reg.t & 0x7f00) | val;
+                    this.reg.v = this.reg.t;
+                } else {
+                    // first
+                    this.reg.t = (this.reg.t & 0xff) | ((val & 0x3f) << 8);
+                }
+                this.reg.w = this.reg.w ^ 1;
+                this.scrollIx ^= 1;
                 break;
             case 7: // 2007
                 //console.log("WritePPU:" + Number(this.ppuAddr).toString(16) + " <= " + Number(val).toString(16));
                 this.famPpu.write(this.ppuAddr, val);
-                if (this.ppuAddr < 0x2000) {
-                    console.log("PPU[" + Number(this.ppuAddr).toString(16) + "=" + val);
-                } else if (this.ppuAddr > 0x2100 && this.ppuAddr < 0x2200) {
-                    console.log("PPU[" + Number(this.ppuAddr).toString(16) + "=" + val);
+                /*
+                if (this.ppuAddr < 0x2000 || this.ppuAddr >= 0x4000) {
+                    console.log("PPU[" + Number(this.ppuAddr).toString(16) + "]=" + val);
+                    debugLogFlag = true;
+                } else if (this.ppuAddr > 0x2000 && this.ppuAddr < 0x23c0 && debugLogFlag) {
+                    console.log("PPU[" + Number(this.ppuAddr).toString(16) + "]=" + val);
                 }
+                */
                 this.ppuAddr += this.ppuInc;
+                this.reg.v += this.ppuInc;
                 break;
             default:
                 break;
@@ -209,13 +258,26 @@ class PpuMemory implements IFamMemory {
         switch (addr & 7) {
             case 2: // 2002
                 let st = this.famPpu.readState();
+                // リセット
+                this.scrollIx = 0;
+                this.reg.w = 0;
                 return (st.scanSprite << 5) | (st.spriteHit ? 0x40 : 0) | (st.vblank ? 0x80 : 0);
             case 7: // 2007
-                let ret = this.famPpu.read(this.ppuAddr);
+                // PPUは１つ遅れて読み込まれる
+                let ret = this.ppuReadData;
+                this.ppuReadData = this.famPpu.read(this.ppuAddr);
                 this.ppuAddr += this.ppuInc;
+                this.reg.v += this.ppuInc;
                 return ret;
         }
         return 0;
+    }
+
+    /**
+     * スキャンライン前の設定
+     */
+    public preScanLine(): void {
+        //this.famPpu.setScroll(this.reg.t )
     }
 }
 
@@ -223,8 +285,16 @@ class PpuMemory implements IFamMemory {
  * 4000-401f
  */
 class ApuIoMemory implements IFamMemory {
-    constructor(private famData: FamData, private parent: FamMemory) {
+    private lastButton: number[] = [0, 0];
+    private lastWrite: number[] = [0, 0];
+    private buttonIndex: number[] = [0, 0];
 
+    constructor(private famData: FamData, private parent: FamMemory) {
+    }
+
+    public checkButton(button: number[]): void {
+        this.lastButton[0] |= button[0];
+        this.lastButton[1] |= button[1];
     }
 
     write(addr: number, val: number): void {
@@ -234,9 +304,25 @@ class ApuIoMemory implements IFamMemory {
             for (let i = 0; i < 256; i++) {
                 this.famData.ppu.writeSprite(i, this.parent.read(memAddr + i));
             }
+        } else if (addr == 0x16 || addr == 0x17) {
+            // Controller
+            let ix = addr - 0x16;
+            if (!val && this.lastWrite[ix]) {
+                // reset
+                this.lastButton[ix] = 0;
+                this.buttonIndex[ix] = 0;
+            }
+            this.lastWrite[ix] = val;
         }
     }
     read(addr: number): number {
+        if (addr == 0x16 || addr == 0x17) {
+            // Controller
+            let ix = addr - 0x16;
+            let flag = (this.lastButton[ix] | this.famData.button[ix]) & (1 << this.buttonIndex[ix]);
+            this.buttonIndex[ix]++;
+            return flag ? 1 : 0;
+        }
         return 0;
     }
 }
@@ -348,6 +434,7 @@ class PrgMemory implements IFamMemory {
  */
 export class FamMemory extends MemManager {
     private ppuMem: PpuMemory;
+    private ioMem: ApuIoMemory;
     constructor(public readonly famData: FamData, private manager: IPrgMemoryManager) {
         super();
         let wram = new WramMemory(0x800);
@@ -359,7 +446,8 @@ export class FamMemory extends MemManager {
         if (this.manager) {
             this.manager.init(this);
         }
-        this.setMemory(new ApuIoMemory(famData, this), 0x4000, 0x4020);
+        this.ioMem = new ApuIoMemory(famData, this);
+        this.setMemory(this.ioMem, 0x4000, 0x4020);
     }
     public get isNmiEnabled(): boolean {
         return this.ppuMem.isNmiEnabled;
@@ -368,6 +456,10 @@ export class FamMemory extends MemManager {
     public setPrgMemory(addr: number, mem: Uint8Array): FamMemory {
         this.setMemory(new PrgMemory(this, addr, mem, this.manager), addr, addr + mem.length);
         return this;
+    }
+
+    public checkButton(button: number[]): void {
+        this.ioMem.checkButton(button);
     }
 }
 
@@ -387,16 +479,6 @@ export class NesRomManager implements IPrgMemoryManager {
     write(memory: FamMemory, addr: number, val: number): void {
     }
 }
-
-type CpuData = {
-    value?: number;
-    addr?: number;
-    newPc?: number;
-    newFlag?: number;
-    cycle?: number;
-};
-
-type CpuProc = (data?: CpuData) => CpuData;
 
 class CpuState {
     regA: number = 0;
@@ -419,13 +501,74 @@ class CpuState {
     }
 };
 
+interface CpuLogFunc {
+    hex2(val: number): CpuLogFunc;
+    hex4(val: number): CpuLogFunc;
+    text(str: string): CpuLogFunc;
+    // 現在のを確定してスペースを開ける
+    fix(term?: string): CpuLogFunc;
+}
+
+const noLogger = new class implements CpuLogFunc {
+    hex2(val: number): CpuLogFunc {
+        return this;
+    }
+    hex4(val: number): CpuLogFunc {
+        return this;
+    }
+    text(str: string): CpuLogFunc {
+        return this;
+    }
+    // 現在のを確定してスペースを開ける
+    fix(term?: string): CpuLogFunc {
+        return this;
+    }
+};
+
+class CpuTextLogger implements CpuLogFunc {
+    private logText: string = "";
+    private fixTerm: string = "";
+
+    constructor() {
+    }
+
+    hex2(val: number): CpuLogFunc {
+        return this.text("$" + ("0" + Number(val & 255).toString(16)).slice(-2).toUpperCase());
+    }
+    hex4(val: number): CpuLogFunc {
+        return this.text("$" + ("000" + Number(val & 0xffff).toString(16)).slice(-4).toUpperCase());
+    }
+    text(str: string): CpuLogFunc {
+        if (this.fixTerm) {
+            this.logText += this.fixTerm;
+            this.fixTerm = "";
+        }
+        this.logText += str;
+        return this;
+    }
+    // 現在のを確定してスペースを開ける
+    fix(term: string = " "): CpuLogFunc {
+        this.fixTerm = term;
+        return this;
+    }
+
+    public toString(): string {
+        return this.logText;
+    }
+}
+
 class CpuExecData {
     private addr: number;
     private value: number;
     public nextPc: number;
+    private bakCpu: any;
 
-    constructor(public readonly state: CpuState, public cycle: number) {
+    constructor(public readonly state: CpuState, public cycle: number, private logFunc?: CpuLogFunc) {
         this.nextPc = state.regPc + 1;
+        if (this.logFunc) {
+            this.logFunc.hex4(this.state.regPc).fix();
+            this.bakCpu = Object.assign({}, this.state);
+        }
     }
 
     public setAddr(addr: number): CpuExecData {
@@ -443,6 +586,7 @@ class CpuExecData {
     public getValue(): number {
         if (this.value === undefined) {
             this.value = this.state.memory.read(this.addr);
+            this.log(log => log.hex2(this.value).text("=(").hex4(this.addr).text(")").fix(","));
         }
         return this.value;
     }
@@ -463,7 +607,7 @@ class CpuExecData {
     }
     public nvzc(newValue: number, oldValue?: number): CpuExecData {
         if (oldValue === undefined) {
-            oldValue = this.value;
+            oldValue = this.getValue();
         }
         if (newValue & 0x100) {
             this.state.regFr |= FR_C;
@@ -579,7 +723,52 @@ class CpuExecData {
             val = this.getValue();
         }
         this.state.memory.write(this.getAddr(), val);
+        this.log(log => log.text("(").hex4(this.getAddr()).text(")=").hex2(val).fix(","));
         return this;
+    }
+    public carry(ret = 1): number {
+        return (this.state.regFr & FR_C) ? ret : 0;
+    }
+    public finish(): void {
+        this.state.regPc = this.nextPc;
+        if (this.logFunc) {
+            // TODO
+            const regs = ["regA", "regX", "regY"];
+            regs.forEach(key => {
+                if (this.bakCpu[key] != this.state[key]) {
+                    this.logFunc.text(key.slice(-1) + "=").hex2(this.bakCpu[key]).text("->").hex2(this.state[key]).fix(",");
+                } else {
+                    this.logFunc.text(key.slice(-1) + "=").hex2(this.state[key]).fix(",");
+                }
+            });
+            const flags = "NV1BDIZC";
+            let txt = "P=";
+            for (let i = 0; i < 8; i++) {
+                if (this.state.regFr & (0x80 >> i)) {
+                    txt += flags[i];
+                } else {
+                    txt += "-";
+                }
+            }
+            this.logFunc.text(txt).fix(",");
+            if (this.bakCpu["regSp"] != this.state.regSp) {
+                this.logFunc.text("SP=").hex2(this.state.regSp).fix(",");
+            }
+        }
+    }
+
+    public log(func: (log: CpuLogFunc) => void): CpuLogFunc;
+    public log(str: string): CpuLogFunc;
+    public log(str: any): CpuLogFunc {
+        if (this.logFunc) {
+            if (typeof str == "string") {
+                this.logFunc.text(str);
+            } else {
+                str(this.logFunc);
+            }
+            return this.logFunc;
+        }
+        return noLogger;
     }
 }
 
@@ -588,26 +777,31 @@ type CpuExecProc = (data: CpuExecData) => CpuExecData;
 const immediate: CpuExecProc = data => {
     data.setValue(data.read(data.nextPc));
     data.nextPc++;
+    data.log(log => log.text("#").hex2(data.getValue()).fix(": "));
     return data;
 };
 const zeroPage: CpuExecProc = data => {
     data.setAddr(data.read(data.nextPc));
     data.nextPc++;
+    data.log(log => log.hex2(data.getAddr()).fix(": "));
     return data;
 };
 const zeroPageX: CpuExecProc = data => {
     data.setAddr((data.read(data.nextPc) + data.state.regX) & 255);
     data.nextPc++;
+    data.log(log => log.hex2(data.getAddr() - data.state.regX).text(",X").fix(": "));
     return data;
 };
 const zeroPageY: CpuExecProc = data => {
     data.setAddr((data.read(data.nextPc) + data.state.regY) & 255);
     data.nextPc++;
+    data.log(log => log.hex2(data.getAddr() - data.state.regY).text(",Y").fix(": "));
     return data;
 };
 const absolute: CpuExecProc = data => {
-    data.setAddr(data.read(data.nextPc) | (data.read(data.nextPc) << 8));
+    data.setAddr(data.read(data.nextPc) | (data.read(data.nextPc + 1) << 8));
     data.nextPc += 2;
+    data.log(log => log.hex4(data.getAddr()).fix(": "));
     return data;
 };
 const absoluteX: CpuExecProc = data => {
@@ -616,8 +810,9 @@ const absoluteX: CpuExecProc = data => {
         // Page Cross
         data.cycle++;
     }
-    data.setAddr(addr + (data.read(data.nextPc) << 8));
+    data.setAddr(addr + (data.read(data.nextPc + 1) << 8));
     data.nextPc += 2;
+    data.log(log => log.hex4(data.getAddr() - data.state.regX).text(",X").fix(": "));
     return data;
 };
 const absoluteY: CpuExecProc = data => {
@@ -626,14 +821,16 @@ const absoluteY: CpuExecProc = data => {
         // Page Cross
         data.cycle++;
     }
-    data.setAddr(addr + (data.read(data.nextPc) << 8));
+    data.setAddr(addr + (data.read(data.nextPc + 1) << 8));
     data.nextPc += 2;
+    data.log(log => log.hex4(data.getAddr() - data.state.regY).text(",Y").fix(": "));
     return data;
 };
 const indirectX: CpuExecProc = data => {
     let ix = data.read(data.nextPc) + data.state.regX;
     data.setAddr(data.read(ix) | (data.read((ix + 1) & 255) << 8));
     data.nextPc++;
+    data.log(log => log.text("(").hex2(ix).text(",X)").fix(": "));
     return data;
 };
 const indirectY: CpuExecProc = data => {
@@ -645,477 +842,248 @@ const indirectY: CpuExecProc = data => {
         data.cycle++;
     }
     data.nextPc++;
+    data.log(log => log.text("(").hex2(ix).text("),Y").fix(": "));
     return data;
 };
-
-// Debug
-const toHex = (val: number) => ("0" + Number(val).toString(16)).substr(-2);
-
-const immediateStr = (cpu: CpuState) => "#$" + toHex(cpu.memory.read(cpu.regPc + 1));
-const zeroPageStr = (cpu: CpuState) => "$" + toHex(cpu.memory.read(cpu.regPc + 1));
-const zeroPageXStr = (cpu: CpuState) => "$" + toHex(cpu.memory.read(cpu.regPc + 1)) + ",X";
-const zeroPageYStr = (cpu: CpuState) => "$" + toHex(cpu.memory.read(cpu.regPc + 1)) + ",Y";
-const absoluteStr = (cpu: CpuState) => "$" + toHex(cpu.memory.read(cpu.regPc + 2)) + toHex(cpu.memory.read(cpu.regPc + 1));
-const absoluteXStr = (cpu: CpuState) => "$" + toHex(cpu.memory.read(cpu.regPc + 2)) + toHex(cpu.memory.read(cpu.regPc + 1)) + ",X";
-const absoluteYStr = (cpu: CpuState) => "$" + toHex(cpu.memory.read(cpu.regPc + 2)) + toHex(cpu.memory.read(cpu.regPc + 1)) + ",Y";
-const indirectXStr = (cpu: CpuState) => "($" + toHex(cpu.memory.read(cpu.regPc + 1)) + ",X)";
-const indirectYStr = (cpu: CpuState) => "($" + toHex(cpu.memory.read(cpu.regPc + 1)) + "),Y";
-const indirectAbsoluteStr = (cpu: CpuState) => "($" + toHex(cpu.memory.read(cpu.regPc + 2)) + toHex(cpu.memory.read(cpu.regPc + 1)) + ")";
-const relativeStr = (cpu: CpuState) => {
-    let addr = cpu.regPc + 2;
-    let ix = cpu.memory.read(cpu.regPc + 1);
-    if (ix & 0x80) {
-        ix -= 0x100;
-    }
-    addr += ix;
-    return "$" + toHex(addr >> 8) + toHex(addr & 0xff);
+const indirectAbsolute: CpuExecProc = data => {
+    let low = data.read(data.nextPc);
+    let hi = data.read(data.nextPc + 1) << 8;
+    data.setAddr(data.read(hi | low) | (data.read(hi | ((low + 1) & 255)) << 8));
+    data.log(log => log.text("(").hex4(hi | low).text(")").fix(": "));
+    return data;
 };
 
 /**
  * CPUの命令
  */
 class CpuInstruction {
-    private proc: CpuProc[] = [];
+    private proc: CpuExecProc[] = [];
     private strFunc: (cpu: CpuState) => string;
 
     constructor(private cpu: CpuState, private cycle: number) {
     }
 
-
-    immediate(): CpuInstruction {
-        this.strFunc = immediateStr;
-        this.proc.push(data => {
-            return {
-                value: this.cpu.memory.read(data.newPc),
-                newPc: data.newPc + 1
-            };
-        });
+    public adc(addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => data.nvzc(data.state.regA + data.getValue() + data.carry(1), data.state.regA).setReg("A"));
         return this;
     }
-
-    absolute(): CpuInstruction {
-        this.strFunc = absoluteStr;
-        this.proc.push(data => {
-            return {
-                addr: this.cpu.memory.read(data.newPc) | (this.cpu.memory.read(data.newPc + 1) << 8),
-                newPc: data.newPc + 2
-            };
-        });
+    public sbc(addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => data.nvzc(0x100 + data.state.regA - data.getValue() - (data.carry(1) ^ 1), data.state.regA).setReg("A"));
         return this;
     }
-
-    zeroPage(): CpuInstruction {
-        this.strFunc = zeroPageStr;
-        this.proc.push(data => {
-            return {
-                addr: this.cpu.memory.read(data.newPc),
-                newPc: data.newPc + 1
-            };
-        });
+    public and(addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => data.nz(data.state.regA & data.getValue()).setReg("A"));
         return this;
     }
-
-    zeroPageX(): CpuInstruction {
-        this.strFunc = zeroPageXStr;
-        this.proc.push(data => {
-            return {
-                addr: (this.cpu.memory.read(data.newPc) + this.cpu.regX) & 0xff,
-                newPc: data.newPc + 1
-            };
-        });
+    public ora(addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => data.nz(data.state.regA | data.getValue()).setReg("A"));
         return this;
     }
-    zeroPageY(): CpuInstruction {
-        this.strFunc = zeroPageYStr;
-        this.proc.push(data => {
-            return {
-                addr: (this.cpu.memory.read(data.newPc) + this.cpu.regY) & 0xff,
-                newPc: data.newPc + 1
-            };
-        });
+    public eor(addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => data.nz(data.state.regA ^ data.getValue()).setReg("A"));
         return this;
     }
-    absoluteX(): CpuInstruction {
-        this.strFunc = absoluteXStr;
-        this.proc.push(data => {
-            let addr = this.cpu.memory.read(data.newPc) + this.cpu.regX;
-            if (addr & 0x100) {
-                data.cycle++;
-            }
-            return {
-                addr: ((this.cpu.memory.read(data.newPc + 1) << 8) + addr) & 0xffff,
-                newPc: data.newPc + 2
-            };
-        });
-        return this;
-    }
-    absoluteY(): CpuInstruction {
-        this.strFunc = absoluteYStr;
-        this.proc.push(data => {
-            let addr = this.cpu.memory.read(data.newPc) + this.cpu.regY;
-            if (addr & 0x100) {
-                data.cycle++;
-            }
-            return {
-                addr: ((this.cpu.memory.read(data.newPc + 1) << 8) + addr) & 0xffff,
-                newPc: data.newPc + 2
-            };
-        });
-        return this;
-    }
-    relative(check: (fr: number) => boolean): CpuInstruction {
-        this.strFunc = relativeStr;
-        this.proc.push(data => {
-            if (check(this.cpu.regFr)) {
-                // 分岐する
-                data.cycle++;
-                let ix = this.cpu.memory.read(data.newPc);
-                if (ix & 0x80) {
-                    ix -= 0x100;
-                }
-                let newPc = (data.newPc + 1 + ix) & 0xffff;
-                if ((data.newPc >> 8) != (newPc >> 8)) {
-                    // ページクロス
-                    data.cycle++;
-                }
-                return {
-                    newPc: newPc
-                };
-            }
-            // 分岐しない
-            return {
-                newPc: data.newPc + 1
-            };
-        });
-        return this;
-    }
-
-    indirectX(): CpuInstruction {
-        this.strFunc = indirectXStr;
-        this.proc.push(data => {
-            let ix = (this.cpu.memory.read(data.newPc) + this.cpu.regX) & 0xff;
-            return {
-                addr: this.cpu.memory.read(ix) | (this.cpu.memory.read((ix + 1) & 0xff) << 8),
-                newPc: data.newPc + 1
-            };
-        });
-        return this;
-    }
-
-    indirectY(): CpuInstruction {
-        this.strFunc = indirectYStr;
-        this.proc.push(data => {
-            let ix = this.cpu.memory.read(data.newPc);
-            let addr = this.cpu.memory.read(ix) | (this.cpu.memory.read((ix + 1) & 0xff) << 8);
-            let newAddr = (addr + this.cpu.regY) & 0xffff;
-            if ((addr >> 8) != (newAddr >> 8)) {
-                // ページクロス
-                data.cycle++;
-            }
-            return {
-                addr: newAddr,
-                newPc: data.newPc + 1
-            };
-        });
-        return this;
-    }
-
-    absoluteIndirect(): CpuInstruction {
-        this.strFunc = indirectAbsoluteStr;
-        this.proc.push(data => {
-            let ix1 = this.cpu.memory.read(data.newPc);
-            let ix2 = (this.cpu.memory.read(data.newPc + 1) << 8);
-            return {
-                addr: this.cpu.memory.read(ix1 | ix2) | (this.cpu.memory.read(((ix1 + 1) & 0xff) | ix2) << 8),
-                newPc: data.newPc + 2
-            };
-        });
-        return this;
-    }
-
-    /**
-     * 処理結果によりフラグを書き換える
-     * @param ope 計算処理
-     * @param flag 変更するフラグ
-     */
-    calc(ope: (val?: number, cpu?: CpuState) => number | [number, number] | [number, boolean], flag = FR_N | FR_Z): CpuInstruction {
-        this.proc.push(data => {
-            let newVal = data.value;
-            let newFr = data.newFlag;
-            let res = ope(data.value, this.cpu);
-            if (typeof res == "number") {
-                newVal = res;
-            } else {
-                // 複数
-                newVal = res[0];
-                if ((flag & FR_V) && typeof res[1] == "number") {
-                    if ((res[0] & 0x80) != ((res[1] as number) & 0x80)) {
-                        newFr |= FR_V;
-                    } else {
-                        newFr &= ~FR_V;
-                    }
-                }
-            }
-            if (flag & FR_C) {
-                if (Array.isArray(res) && typeof res[1] == "boolean") {
-                    // 直接
-                    if (res[1]) {
-                        newFr |= FR_C;
-                    } else {
-                        newFr &= ~FR_C;
-                    }
-                } else if (newVal & 0x100) {
-                    newFr |= FR_C;
-                } else {
-                    newFr &= ~FR_C;
-                }
-            }
-            if (flag & FR_N) {
-                if (newVal & 0x80) {
-                    newFr |= FR_N;
-                } else {
-                    newFr &= ~FR_N;
-                }
-            }
-            if (flag & FR_Z) {
-                if (newVal & 0xff) {
-                    newFr &= ~FR_Z;
-                } else {
-                    newFr |= FR_Z;
-                }
-            }
-            return {
-                value: newVal & 0xff,
-                newFlag: newFr
-            };
-        });
-        return this;
-    }
-
-    /**
-     * メモリからロード
-     */
-    load(): CpuInstruction {
-        this.proc.push(data => {
-            return {
-                value: this.cpu.memory.read(data.addr)
-            };
-        });
-        return this;
-    }
-
-    /**
-     * メモリへ書き込む
-     * @param res 
-     */
-    store(res?: (cpu?: CpuState) => number): CpuInstruction {
-        this.proc.push(data => {
-            let val = data.value;
-            if (res) {
-                val = res(this.cpu) & 0xff;
-            }
-            this.cpu.memory.write(data.addr, val);
-            return {
-                value: val
-            };
-        });
-        return this;
-    }
-
-    jump(): CpuInstruction {
-        this.proc.push(data => {
-            return {
-                newPc: data.addr
-            };
-        });
-        return this;
-    }
-
-    /**
-     * フラグを変えない処理
-     * @param ope 
-     */
-    ope(ope: (val?: number, cpu?: CpuState) => number): CpuInstruction {
-        this.proc.push(data => {
-            return {
-                value: ope(data.value, this.cpu) & 0xff
-            };
-        });
-        return this;
-    }
-
-    /**
-     * Aレジスタへ設定する
-     * @param flag N/Zフラグも変更するか
-     */
-    setA(flag = false): CpuInstruction {
-        if (flag) {
-            this.proc.push(data => {
-                this.cpu.regA = data.value;
-                if (data.value & 0x80) {
-                    data.newFlag |= FR_N;
-                } else {
-                    data.newFlag &= ~FR_N;
-                }
-                if (data.value) {
-                    data.newFlag &= ~FR_Z;
-                } else {
-                    data.newFlag |= FR_Z;
-                }
-                return {};
+    public asl(addr?: CpuExecProc): CpuInstruction {
+        if (addr) {
+            this.proc.push(addr, data => {
+                let val = data.getValue();
+                return data.nzc(val << 1).store();
             });
         } else {
             this.proc.push(data => {
-                this.cpu.regA = data.value;
-                return {};
+                let val = data.state.regA;
+                return data.nzc(val << 1).setReg("A");
             });
         }
         return this;
     }
-    setX(): CpuInstruction {
+    public lsr(addr?: CpuExecProc): CpuInstruction {
+        if (addr) {
+            this.proc.push(addr, data => {
+                let val = data.getValue();
+                return data.nzc(val >> 1, (val & 1) > 0).store();
+            });
+        } else {
+            this.proc.push(data => {
+                let val = data.state.regA;
+                return data.nzc(val >> 1, (val & 1) > 0).setReg("A");
+            });
+        }
+        return this;
+    }
+    public rol(addr?: CpuExecProc): CpuInstruction {
+        if (addr) {
+            this.proc.push(addr, data => {
+                let val = data.getValue();
+                return data.nzc((val << 1) | data.carry()).store();
+            });
+        } else {
+            this.proc.push(data => {
+                let val = data.state.regA;
+                return data.nzc((val << 1) | data.carry()).setReg("A");
+            });
+        }
+        return this;
+    }
+    public ror(addr?: CpuExecProc): CpuInstruction {
+        if (addr) {
+            this.proc.push(addr, data => {
+                let val = data.getValue();
+                return data.nzc((val >> 1) | data.carry(0x80), (val & 1) > 0).store();
+            });
+        } else {
+            this.proc.push(data => {
+                let val = data.state.regA;
+                return data.nzc((val >> 1) | data.carry(0x80), (val & 1) > 0).setReg("A");
+            });
+        }
+        return this;
+    }
+    public relativeJump(check: (flag: number) => boolean): CpuInstruction {
         this.proc.push(data => {
-            this.cpu.regX = data.value;
-            if (data.value & 0x80) {
-                data.newFlag |= FR_N;
-            } else {
-                data.newFlag &= ~FR_N;
+            data.nextPc++;
+            data.log(log => {
+                let ix = data.read(data.nextPc - 1);
+                if (ix & 0x80) {
+                    ix -= 0x100;
+                }
+                return log.hex4(data.nextPc + ix).fix(": ");
+            });
+            if (check(data.state.regFr)) {
+                // Jump
+                let ix = data.read(data.nextPc - 1);
+                if (ix & 0x80) {
+                    ix -= 0x100;
+                }
+                let pc = data.nextPc + ix;
+                if ((data.nextPc & 0x100) != (pc & 0x100)) {
+                    // Page Cross
+                    data.cycle += 2;
+                } else {
+                    data.cycle++;
+                }
+                data.nextPc = pc & 0xffff;
             }
-            if (data.value) {
-                data.newFlag &= ~FR_Z;
-            } else {
-                data.newFlag |= FR_Z;
-            }
-            return {};
+            return data;
         });
         return this;
     }
-    setY(): CpuInstruction {
-        this.proc.push(data => {
-            this.cpu.regY = data.value;
-            if (data.value & 0x80) {
-                data.newFlag |= FR_N;
-            } else {
-                data.newFlag &= ~FR_N;
-            }
-            if (data.value) {
-                data.newFlag &= ~FR_Z;
-            } else {
-                data.newFlag |= FR_Z;
-            }
-            return {};
+    public bit(addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => data.bit());
+        return this;
+    }
+    public jump(addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => {
+            data.nextPc = data.getAddr();
+            return data;
         });
+        return this;
+    }
+    public jsr(): CpuInstruction {
+        this.proc.push(absolute, data => {
+            data.push16(data.nextPc - 1);
+            data.nextPc = data.getAddr();
+            return data;
+        });
+        return this;
+    }
+    public rts(): CpuInstruction {
+        this.proc.push(data => {
+            let addr = data.pop16();
+            data.nextPc = (addr + 1) & 0xffff;
+            return data;
+        });
+        return this;
+    }
+    public brk(): CpuInstruction {
+        this.proc.push(data => {
+            data.state.setInterrupt("brk");
+            data.nextPc++;
+            return data;
+        });
+        return this;
+    }
+    public rti(): CpuInstruction {
+        this.proc.push(data => {
+            let flag = data.pop8();
+            data.nextPc = data.pop16();
+            data.setFlag(flag);
+            return data;
+        });
+        return this;
+    }
+    public cmp(reg: "A" | "X" | "Y", addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => data.nzc(0x100 + data.state["reg" + reg] - data.getValue()));
+        return this;
+    }
+    public inc(reg: CpuExecProc | "X" | "Y"): CpuInstruction {
+        if (typeof reg == "string") {
+            this.proc.push(data => data.nz(data.state["reg" + reg] + 1).setReg(reg));
+        } else {
+            this.proc.push(reg, data => data.nz(data.getValue() + 1).store());
+        }
+        return this;
+    }
+    public dec(reg: CpuExecProc | "X" | "Y"): CpuInstruction {
+        if (typeof reg == "string") {
+            this.proc.push(data => data.nz(data.state["reg" + reg] - 1).setReg(reg));
+        } else {
+            this.proc.push(reg, data => data.nz(data.getValue() - 1).store());
+        }
+        return this;
+    }
+    public flag(bit: number, val: boolean): CpuInstruction {
+        if (val) {
+            this.proc.push(data => data.setFlag(bit, bit));
+        } else {
+            this.proc.push(data => data.setFlag(0, bit));
+        }
+        return this;
+    }
+    public load(reg: "A" | "X" | "Y", addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => data.nz(data.getValue()).setReg(reg));
+        return this;
+    }
+    public store(reg: "A" | "X" | "Y", addr: CpuExecProc): CpuInstruction {
+        this.proc.push(addr, data => data.store(data.state["reg" + reg]));
+        return this;
+    }
+    public transfer(from: "A" | "X" | "Y" | "Fr", to: "A" | "X" | "Y" | "Fr"): CpuInstruction {
+        if (to == "Fr") {
+            // 特殊
+            this.proc.push(data => data.setFlag(data.state["reg" + from]));
+        } else {
+            this.proc.push(data => data.nz(data.state["reg" + from]).setReg(to));
+        }
+        return this;
+    }
+    public pha(): CpuInstruction {
+        this.proc.push(data => data.push8(data.state.regA));
+        return this;
+    }
+    public pla(): CpuInstruction {
+        this.proc.push(data => data.nz(data.pop8()).setReg("A"));
+        return this;
+    }
+    public php(): CpuInstruction {
+        this.proc.push(data => data.push8(data.state.regFr));
+        return this;
+    }
+    public plp(): CpuInstruction {
+        this.proc.push(data => data.setFlag(data.pop8()));
         return this;
     }
 
-    jsr(): CpuInstruction {
-        this.proc.push(data => {
-            this.push16(data.newPc - 1);
-            return {
-                newPc: data.addr
-            };
-        });
-        return this;
-    }
-    rts(): CpuInstruction {
-        this.proc.push(data => {
-            return {
-                newPc: this.pop16() + 1
-            };
-        });
-        return this;
-    }
-    brk(): CpuInstruction {
-        this.proc.push(data => {
-            if (this.cpu.regFr & FR_I) {
-                // 割り込み処理中
-                // TODO
-                return {};
-            }
-            this.cpu.setInterrupt("brk");
-            return {
-                newPc: data.addr + 1
-            };
-        });
-        return this;
-    }
-    rti(): CpuInstruction {
-        this.proc.push(data => {
-            let newFr = this.pop8();
-            return {
-                newFlag: newFr & ~FR_I,
-                newPc: this.pop16()
-            };
-        });
-        return this;
-    }
-    setFlag(proc: (fr: number, cpu?: CpuState) => number): CpuInstruction {
-        this.proc.push(data => {
-            return {
-                newFlag: proc(data.newFlag, this.cpu)
-            };
-        });
-        return this;
-    }
-    pushA(): CpuInstruction {
-        this.proc.push(data => {
-            this.push8(this.cpu.regA);
-            return {};
-        });
-        return this;
-    }
-    pushP(): CpuInstruction {
-        this.proc.push(data => {
-            this.push8(this.cpu.regFr);
-            return {};
-        });
-        return this;
-    }
-    popA(): CpuInstruction {
-        this.proc.push(data => {
-            return {
-                value: this.pop8()
-            };
-        });
-        this.setA(true);
-        return this;
-    }
-    popP(): CpuInstruction {
-        this.proc.push(data => {
-            return {
-                newFlag: this.pop8()
-            };
-        });
-        return this;
-    }
-
-    private push8(val: number): void {
-        this.cpu.memory.write(0x100 | this.cpu.regSp, val);
-        this.cpu.regSp = (this.cpu.regSp - 1) & 0xff;
-    }
-    private push16(addr: number): void {
-        this.push8(addr >> 8);
-        this.push8(addr & 0xff);
-    }
-    private pop8(): number {
-        this.cpu.regSp = (this.cpu.regSp + 1) & 0xff;
-        let ret = this.cpu.memory.read(0x100 | this.cpu.regSp);
-        return ret;
-    }
-    private pop16(): number {
-        let addr = this.pop8();
-        addr |= (this.pop8() << 8);
-        return addr;
-    }
-
-    exec(): number {
-        let data: CpuData = {
-            newPc: (this.cpu.regPc + 1) & 0xffff,
-            newFlag: this.cpu.regFr,
-            cycle: this.cycle
-        };
-        this.proc.forEach(p => Object.assign(data, p(data)));
-        this.cpu.regPc = data.newPc & 0xffff;
-        this.cpu.regFr = data.newFlag;
+    public execute(logFunc?: CpuLogFunc): number {
+        let data = new CpuExecData(this.cpu, this.cycle, logFunc);
+        data.log(this.opeName).fix();
+        try {
+            this.proc.forEach(func => data = func(data));
+        } catch (e) {
+            console.log(e);
+            throw e;
+        }
+        data.finish();
         return data.cycle;
     }
 
@@ -1124,14 +1092,6 @@ class CpuInstruction {
     public name(nm: string): CpuInstruction {
         this.opeName = nm;
         return this;
-    }
-
-    public toString(cpu: CpuState): string {
-        let ret = this.opeName || toHex(cpu.memory.read(cpu.regPc));
-        if (this.strFunc) {
-            ret += " " + this.strFunc(cpu);
-        }
-        return ret;
     }
 }
 
@@ -1170,352 +1130,121 @@ export class FamCpu {
 
     init() {
         // ADC
-        let adc = (val: number, cpu: CpuState) => [cpu.regA + val + (cpu.regFr & FR_C), cpu.regA];
-        this.entry(0x69, 2).name("ADC")
-            .immediate()
-            .calc(adc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0x65, 3).name("ADC")
-            .zeroPage()
-            .load()
-            .calc(adc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0x75, 4).name("ADC")
-            .zeroPageX()
-            .load()
-            .calc(adc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0x6d, 4).name("ADC")
-            .absolute()
-            .load()
-            .calc(adc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0x7d, 4).name("ADC")
-            .absoluteX()
-            .load()
-            .calc(adc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0x79, 4).name("ADC")
-            .absoluteY()
-            .load()
-            .calc(adc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0x61, 6).name("ADC")
-            .indirectX()
-            .load()
-            .calc(adc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0x71, 5).name("ADC")
-            .indirectY()
-            .load()
-            .calc(adc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
+        this.entry(0x69, 2).name("ADC").adc(immediate);
+        this.entry(0x65, 3).name("ADC").adc(zeroPage);
+        this.entry(0x75, 4).name("ADC").adc(zeroPageX);
+        this.entry(0x6d, 4).name("ADC").adc(absolute);
+        this.entry(0x7d, 4).name("ADC").adc(absoluteX);
+        this.entry(0x79, 4).name("ADC").adc(absoluteY);
+        this.entry(0x61, 6).name("ADC").adc(indirectX);
+        this.entry(0x71, 5).name("ADC").adc(indirectY);
 
         // SBC
-        let sbc = (val: number, cpu: CpuState) => [0x100 + cpu.regA - val - ((cpu.regFr & FR_C) ^ FR_C), cpu.regA];
-        this.entry(0xe9, 2).name("SBC")
-            .immediate()
-            .calc(sbc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0xe5, 3).name("SBC")
-            .zeroPage()
-            .load()
-            .calc(sbc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0xf5, 4).name("SBC")
-            .zeroPageX()
-            .load()
-            .calc(sbc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0xed, 4).name("SBC")
-            .absolute()
-            .load()
-            .calc(sbc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0xfd, 4).name("SBC")
-            .absoluteX()
-            .load()
-            .calc(sbc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0xf9, 4).name("SBC")
-            .absoluteY()
-            .load()
-            .calc(sbc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0xe1, 6).name("SBC")
-            .indirectX()
-            .load()
-            .calc(sbc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
-        this.entry(0xf1, 5).name("SBC")
-            .indirectY()
-            .load()
-            .calc(sbc as any, FR_Z | FR_C | FR_N | FR_V)
-            .setA();
+        this.entry(0xe9, 2).name("SBC").sbc(immediate);
+        this.entry(0xe5, 3).name("SBC").sbc(zeroPage);
+        this.entry(0xf5, 4).name("SBC").sbc(zeroPageX);
+        this.entry(0xed, 4).name("SBC").sbc(absolute);
+        this.entry(0xfd, 4).name("SBC").sbc(absoluteX);
+        this.entry(0xf9, 4).name("SBC").sbc(absoluteY);
+        this.entry(0xe1, 6).name("SBC").sbc(indirectX);
+        this.entry(0xf1, 5).name("SBC").sbc(indirectY);
 
         // AND
-        let and = (val: number, cpu: CpuState) => cpu.regA &= val;
-        this.entry(0x29, 2).name("AND")
-            .immediate()
-            .calc(and);
-        this.entry(0x25, 3).name("AND")
-            .zeroPage()
-            .load()
-            .calc(and);
-        this.entry(0x35, 4).name("AND")
-            .zeroPageX()
-            .load()
-            .calc(and);
-        this.entry(0x2d, 4).name("AND")
-            .absolute()
-            .load()
-            .calc(and);
-        this.entry(0x3d, 4).name("AND")
-            .absoluteX()
-            .load()
-            .calc(and);
-        this.entry(0x39, 4).name("AND")
-            .absoluteY()
-            .load()
-            .calc(and);
-        this.entry(0x21, 6).name("AND")
-            .indirectX()
-            .load()
-            .calc(and);
-        this.entry(0x31, 5).name("AND")
-            .indirectY()
-            .load()
-            .calc(and);
+        this.entry(0x29, 2).name("AND").and(immediate);
+        this.entry(0x25, 3).name("AND").and(zeroPage);
+        this.entry(0x35, 4).name("AND").and(zeroPageX);
+        this.entry(0x2d, 4).name("AND").and(absolute);
+        this.entry(0x3d, 4).name("AND").and(absoluteX);
+        this.entry(0x39, 4).name("AND").and(absoluteY);
+        this.entry(0x21, 6).name("AND").and(indirectX);
+        this.entry(0x31, 5).name("AND").and(indirectY);
 
         // ORA
-        let ora = (val: number, cpu: CpuState) => cpu.regA |= val;
-        this.entry(0x09, 2).name("ORA")
-            .immediate()
-            .calc(ora);
-        this.entry(0x05, 3).name("ORA")
-            .zeroPage()
-            .load()
-            .calc(ora);
-        this.entry(0x15, 4).name("ORA")
-            .zeroPageX()
-            .load()
-            .calc(ora);
-        this.entry(0x0d, 4).name("ORA")
-            .absolute()
-            .load()
-            .calc(ora);
-        this.entry(0x1d, 4).name("ORA")
-            .absoluteX()
-            .load()
-            .calc(ora);
-        this.entry(0x19, 4).name("ORA")
-            .absoluteY()
-            .load()
-            .calc(ora);
-        this.entry(0x01, 6).name("ORA")
-            .indirectX()
-            .load()
-            .calc(ora);
-        this.entry(0x11, 5).name("ORA")
-            .indirectY()
-            .load()
-            .calc(ora);
+        this.entry(0x09, 2).name("ORA").ora(immediate);
+        this.entry(0x05, 3).name("ORA").ora(zeroPage);
+        this.entry(0x15, 4).name("ORA").ora(zeroPageX);
+        this.entry(0x0d, 4).name("ORA").ora(absolute);
+        this.entry(0x1d, 4).name("ORA").ora(absoluteX);
+        this.entry(0x19, 4).name("ORA").ora(absoluteY);
+        this.entry(0x01, 6).name("ORA").ora(indirectX);
+        this.entry(0x11, 5).name("ORA").ora(indirectY);
 
         // EOR
-        let eor = (val: number, cpu: CpuState) => cpu.regA ^= val;
-        this.entry(0x49, 2).name("EOR")
-            .immediate()
-            .calc(eor);
-        this.entry(0x45, 3).name("EOR")
-            .zeroPage()
-            .load()
-            .calc(eor);
-        this.entry(0x55, 4).name("EOR")
-            .zeroPageX()
-            .load()
-            .calc(eor);
-        this.entry(0x4d, 4).name("EOR")
-            .absolute()
-            .load()
-            .calc(eor);
-        this.entry(0x5d, 4).name("EOR")
-            .absoluteX()
-            .load()
-            .calc(eor);
-        this.entry(0x59, 4).name("EOR")
-            .absoluteY()
-            .load()
-            .calc(eor);
-        this.entry(0x41, 6).name("EOR")
-            .indirectX()
-            .load()
-            .calc(eor);
-        this.entry(0x51, 5).name("EOR")
-            .indirectY()
-            .load()
-            .calc(eor);
+        this.entry(0x49, 2).name("EOR").eor(immediate);
+        this.entry(0x45, 3).name("EOR").eor(zeroPage);
+        this.entry(0x55, 4).name("EOR").eor(zeroPageX);
+        this.entry(0x4d, 4).name("EOR").eor(absolute);
+        this.entry(0x5d, 4).name("EOR").eor(absoluteX);
+        this.entry(0x59, 4).name("EOR").eor(absoluteY);
+        this.entry(0x41, 6).name("EOR").eor(indirectX);
+        this.entry(0x51, 5).name("EOR").eor(indirectY);
 
         // ASL
-        let asl = (val: number) => {
-            //console.log("ASL:" + val);
-            return [val << 1, (val & 0x80) > 0];
-        };
-        this.entry(0x0a, 2).name("ASL")
-            .ope((val, cpu) => cpu.regA)
-            .calc(asl as any, FR_C | FR_N | FR_Z)
-            .setA();
-        this.entry(0x06, 5).name("ASL")
-            .zeroPage()
-            .load()
-            .calc(asl as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x16, 6).name("ASL")
-            .zeroPageX()
-            .load()
-            .calc(asl as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x0e, 6).name("ASL")
-            .absolute()
-            .load()
-            .calc(asl as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x1e, 6).name("ASL")
-            .absoluteX()
-            .load()
-            .calc(asl as any, FR_C | FR_N | FR_Z)
-            .store();
+        this.entry(0x0a, 2).name("ASL").asl();
+        this.entry(0x06, 5).name("ASL").asl(zeroPage);
+        this.entry(0x16, 6).name("ASL").asl(zeroPageX);
+        this.entry(0x0e, 6).name("ASL").asl(absolute);
+        this.entry(0x1e, 6).name("ASL").asl(absoluteX);
 
         // LSR
-        let lsr = (val: number) => [val >> 1, (val & 0x01) > 0];
-        this.entry(0x4a, 2).name("LSR")
-            .ope((val, cpu) => cpu.regA)
-            .calc(lsr as any, FR_C | FR_N | FR_Z)
-            .setA();
-        this.entry(0x46, 5).name("LSR")
-            .zeroPage()
-            .load()
-            .calc(lsr as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x56, 6).name("LSR")
-            .zeroPageX()
-            .load()
-            .calc(lsr as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x4e, 6).name("LSR")
-            .absolute()
-            .load()
-            .calc(lsr as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x5e, 6).name("LSR")
-            .absoluteX()
-            .load()
-            .calc(lsr as any, FR_C | FR_N | FR_Z)
-            .store();
+        this.entry(0x4a, 2).name("LSR").lsr();
+        this.entry(0x46, 5).name("LSR").lsr(zeroPage);
+        this.entry(0x56, 6).name("LSR").lsr(zeroPageX);
+        this.entry(0x4e, 6).name("LSR").lsr(absolute);
+        this.entry(0x5e, 6).name("LSR").lsr(absoluteX);
 
         // ROL
-        let rol = (val: number, cpu: CpuState) => [(val << 1) | (cpu.regFr & FR_C), (val & 0x80) > 0];
-        this.entry(0x2a, 2).name("ROL")
-            .ope((val, cpu) => cpu.regA)
-            .calc(rol as any, FR_C | FR_N | FR_Z)
-            .setA();
-        this.entry(0x26, 5).name("ROL")
-            .zeroPage()
-            .load()
-            .calc(rol as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x36, 6).name("ROL")
-            .zeroPageX()
-            .load()
-            .calc(rol as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x2e, 6).name("ROL")
-            .absolute()
-            .load()
-            .calc(rol as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x3e, 6).name("ROL")
-            .absoluteX()
-            .load()
-            .calc(rol as any, FR_C | FR_N | FR_Z)
-            .store();
+        this.entry(0x2a, 2).name("ROL").rol();
+        this.entry(0x26, 5).name("ROL").rol(zeroPage);
+        this.entry(0x36, 6).name("ROL").rol(zeroPageX);
+        this.entry(0x2e, 6).name("ROL").rol(absolute);
+        this.entry(0x3e, 6).name("ROL").rol(absoluteX);
 
 
         // ROR
-        let ror = (val: number, cpu: CpuState) => [(val >> 1) | ((cpu.regFr & FR_C) << 7), (val & 0x01) > 0];
-        this.entry(0x6a, 2).name("ROR")
-            .ope((val, cpu) => cpu.regA)
-            .calc(ror as any, FR_C | FR_N | FR_Z)
-            .setA();
-        this.entry(0x66, 5).name("ROR")
-            .zeroPage()
-            .load()
-            .calc(ror as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x76, 6).name("ROR")
-            .zeroPageX()
-            .load()
-            .calc(ror as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x6e, 6).name("ROR")
-            .absolute()
-            .load()
-            .calc(ror as any, FR_C | FR_N | FR_Z)
-            .store();
-        this.entry(0x7e, 6).name("ROR")
-            .absoluteX()
-            .load()
-            .calc(ror as any, FR_C | FR_N | FR_Z)
-            .store();
+        this.entry(0x6a, 2).name("ROR").ror();
+        this.entry(0x66, 5).name("ROR").ror(zeroPage);
+        this.entry(0x76, 6).name("ROR").ror(zeroPageX);
+        this.entry(0x6e, 6).name("ROR").ror(absolute);
+        this.entry(0x7e, 6).name("ROR").ror(absoluteX);
 
         // Relative Jump
         // BCC
         this.entry(0x90, 2).name("BCC")
-            .relative(fr => (fr & FR_C) == 0);
+            .relativeJump(fr => (fr & FR_C) == 0);
         // BCS
         this.entry(0xb0, 2).name("BCS")
-            .relative(fr => (fr & FR_C) > 0);
+            .relativeJump(fr => (fr & FR_C) > 0);
         // BEQ
         this.entry(0xf0, 2).name("BEQ")
-            .relative(fr => (fr & FR_Z) > 0);
+            .relativeJump(fr => (fr & FR_Z) > 0);
         // BNE
         this.entry(0xd0, 2).name("BNE")
-            .relative(fr => (fr & FR_Z) == 0);
+            .relativeJump(fr => (fr & FR_Z) == 0);
         // BVC
         this.entry(0x50, 2).name("BVC")
-            .relative(fr => (fr & FR_V) == 0);
+            .relativeJump(fr => (fr & FR_V) == 0);
         // BVS
         this.entry(0x70, 2).name("BVS")
-            .relative(fr => (fr & FR_V) > 0);
+            .relativeJump(fr => (fr & FR_V) > 0);
         // BPL
         this.entry(0x10, 2).name("BPL")
-            .relative(fr => (fr & FR_N) == 0);
+            .relativeJump(fr => (fr & FR_N) == 0);
         // BMI
         this.entry(0x30, 2).name("BMI")
-            .relative(fr => (fr & FR_N) > 0);
+            .relativeJump(fr => (fr & FR_N) > 0);
 
         // BIT
         // N 対象の bit7, V:対象の bit6,Z: A&対象==0
-        this.entry(0x24, 3).name("BIT")
-            .zeroPage()
-            .load()
-            .calc(val => [val, val ^ ((val & 0x40) << 1)], FR_N | FR_V)
-            .calc((val, cpu) => val & cpu.regA, FR_Z);
-        this.entry(0x2c, 4).name("BIT")
-            .absolute()
-            .load()
-            .calc(val => [val, val ^ ((val & 0x40) << 1)], FR_N | FR_V)
-            .calc((val, cpu) => val & cpu.regA, FR_Z);
+        this.entry(0x24, 3).name("BIT").bit(zeroPage);
+        this.entry(0x2c, 4).name("BIT").bit(absolute);
 
         // JMP
-        this.entry(0x4c, 3).name("JMP")
-            .absolute()
-            .jump();
-        this.entry(0x6c, 5).name("JMP")
-            .absoluteIndirect()
-            .jump();
+        this.entry(0x4c, 3).name("JMP").jump(absolute);
+        this.entry(0x6c, 5).name("JMP").jump(indirectAbsolute);
 
         // JSR
-        this.entry(0x20, 6).name("JSR").absolute().jsr();
+        this.entry(0x20, 6).name("JSR").jsr();
         // RTS
         this.entry(0x60, 6).name("RTS").rts();
         // BRK
@@ -1524,228 +1253,145 @@ export class FamCpu {
         this.entry(0x40, 6).name("RTI").rti();
 
         // CMP
-        let cmpA = (val: number, cpu: CpuState) => [cpu.regA - val, cpu.regA >= val];
-        let cmpX = (val: number, cpu: CpuState) => [cpu.regX - val, cpu.regX >= val];
-        let cmpY = (val: number, cpu: CpuState) => [cpu.regY - val, cpu.regY >= val];
-        this.entry(0xc9, 2).name("CMP")
-            .immediate()
-            .calc(cmpA as any, FR_Z | FR_N | FR_C);
-        this.entry(0xc5, 3).name("CMP")
-            .zeroPage()
-            .load()
-            .calc(cmpA as any, FR_Z | FR_N | FR_C);
-        this.entry(0xd5, 4).name("CMP")
-            .zeroPageX()
-            .load()
-            .calc(cmpA as any, FR_Z | FR_N | FR_C);
-        this.entry(0xcd, 4).name("CMP")
-            .absolute()
-            .load()
-            .calc(cmpA as any, FR_Z | FR_N | FR_C);
-        this.entry(0xdd, 4).name("CMP")
-            .absoluteX()
-            .load()
-            .calc(cmpA as any, FR_Z | FR_N | FR_C);
-        this.entry(0xd9, 4).name("CMP")
-            .absoluteY()
-            .load()
-            .calc(cmpA as any, FR_Z | FR_N | FR_C);
-        this.entry(0xc1, 6).name("CMP")
-            .indirectX()
-            .load()
-            .calc(cmpA as any, FR_Z | FR_N | FR_C);
-        this.entry(0xd1, 5).name("CMP")
-            .indirectY()
-            .load()
-            .calc(cmpA as any, FR_Z | FR_N | FR_C);
+        this.entry(0xc9, 2).name("CMP").cmp("A", immediate);
+        this.entry(0xc5, 3).name("CMP").cmp("A", zeroPage);
+        this.entry(0xd5, 4).name("CMP").cmp("A", zeroPageX);
+        this.entry(0xcd, 4).name("CMP").cmp("A", absolute);
+        this.entry(0xdd, 4).name("CMP").cmp("A", absoluteX);
+        this.entry(0xd9, 4).name("CMP").cmp("A", absoluteY);
+        this.entry(0xc1, 6).name("CMP").cmp("A", indirectX);
+        this.entry(0xd1, 5).name("CMP").cmp("A", indirectY);
         // CPX
-        this.entry(0xe0, 2).name("CPX")
-            .immediate()
-            .calc(cmpX as any, FR_Z | FR_N | FR_C);
-        this.entry(0xe4, 3).name("CPX")
-            .zeroPage()
-            .load()
-            .calc(cmpX as any, FR_Z | FR_N | FR_C);
-        this.entry(0xec, 4).name("CPX")
-            .absolute()
-            .load()
-            .calc(cmpX as any, FR_Z | FR_N | FR_C);
+        this.entry(0xe0, 2).name("CPX").cmp("X", immediate);
+        this.entry(0xe4, 3).name("CPX").cmp("X", zeroPage);
+        this.entry(0xec, 4).name("CPX").cmp("X", absolute);
         // CPY
-        this.entry(0xc0, 2).name("CPY")
-            .immediate()
-            .calc(cmpY as any, FR_Z | FR_N | FR_C);
-        this.entry(0xc4, 3).name("CPY")
-            .zeroPage()
-            .load()
-            .calc(cmpY as any, FR_Z | FR_N | FR_C);
-        this.entry(0xcc, 4).name("CPY")
-            .absolute()
-            .load()
-            .calc(cmpY as any, FR_Z | FR_N | FR_C);
+        this.entry(0xc0, 2).name("CPY").cmp("Y", immediate);
+        this.entry(0xc4, 3).name("CPY").cmp("Y", zeroPage);
+        this.entry(0xcc, 4).name("CPY").cmp("Y", absolute);
 
         // INC
-        this.entry(0xe6, 5).name("INC")
-            .zeroPage()
-            .load()
-            .calc(val => val + 1)
-            .store();
-        this.entry(0xf6, 6).name("INC")
-            .zeroPageX()
-            .load()
-            .calc(val => val + 1)
-            .store();
-        this.entry(0xee, 6).name("INC")
-            .absolute()
-            .load()
-            .calc(val => val + 1)
-            .store();
-        this.entry(0xfe, 6).name("INC")
-            .absoluteX()
-            .load()
-            .calc(val => val + 1)
-            .store();
+        this.entry(0xe6, 5).name("INC").inc(zeroPage);
+        this.entry(0xf6, 6).name("INC").inc(zeroPageX);
+        this.entry(0xee, 6).name("INC").inc(absolute);
+        this.entry(0xfe, 6).name("INC").inc(absoluteX);
 
         // DEC
-        this.entry(0xc6, 5).name("DEC")
-            .zeroPage()
-            .load()
-            .calc(val => val - 1)
-            .store();
-        this.entry(0xd6, 6).name("DEC")
-            .zeroPageX()
-            .load()
-            .calc(val => val - 1)
-            .store();
-        this.entry(0xce, 6).name("DEC")
-            .absolute()
-            .load()
-            .calc(val => val - 1)
-            .store();
-        this.entry(0xde, 6).name("DEC")
-            .absoluteX()
-            .load()
-            .calc(val => val - 1)
-            .store();
+        this.entry(0xc6, 5).name("DEC").dec(zeroPage);
+        this.entry(0xd6, 6).name("DEC").dec(zeroPageX);
+        this.entry(0xce, 6).name("DEC").dec(absolute);
+        this.entry(0xde, 6).name("DEC").dec(absoluteX);
 
         // INX
-        this.entry(0xe8, 2).name("INX").ope((val, cpu) => cpu.regX + 1).setX();
+        this.entry(0xe8, 2).name("INX").inc("X");
         // DEX
-        this.entry(0xca, 2).name("DEX").ope((val, cpu) => cpu.regX - 1).setX();
+        this.entry(0xca, 2).name("DEX").dec("X");
         // INY
-        this.entry(0xc8, 2).name("INY").ope((val, cpu) => cpu.regY + 1).setY();
+        this.entry(0xc8, 2).name("INY").inc("Y");
         // DEY
-        this.entry(0x88, 2).name("DEY").ope((val, cpu) => cpu.regY - 1).setY();
+        this.entry(0x88, 2).name("DEY").dec("Y");
 
         // CLC
-        this.entry(0x18, 2).name("CLC").setFlag(fr => fr & ~FR_C);
+        this.entry(0x18, 2).name("CLC").flag(FR_C, false);
         // SEC
-        this.entry(0x38, 2).name("SEC").setFlag(fr => fr | FR_C);
+        this.entry(0x38, 2).name("SEC").flag(FR_C, true);
         // CLI
-        this.entry(0x58, 2).name("CLI").setFlag(fr => fr & ~FR_I);
+        this.entry(0x58, 2).name("CLI").flag(FR_I, false);
         // SEI
-        this.entry(0x78, 2).name("SEI").setFlag(fr => fr | FR_I);
+        this.entry(0x78, 2).name("SEI").flag(FR_I, true);
         // CLD
-        this.entry(0xd8, 2).name("CLD").setFlag(fr => fr & ~FR_D);
+        this.entry(0xd8, 2).name("CLD").flag(FR_D, false);
         // SED
-        this.entry(0xf8, 2).name("SED").setFlag(fr => fr | FR_D);
+        this.entry(0xf8, 2).name("SED").flag(FR_D, true);
         // CLV
-        this.entry(0xb8, 2).name("CLV").setFlag(fr => fr & ~FR_V);
+        this.entry(0xb8, 2).name("CLV").flag(FR_V, false);
 
         // LDA
-        this.entry(0xa9, 2).name("LDA").immediate().setA(true);
-        this.entry(0xa5, 3).name("LDA").zeroPage().load().setA(true);
-        this.entry(0xb5, 4).name("LDA").zeroPageX().load().setA(true);
-        this.entry(0xad, 4).name("LDA").absolute().load().setA(true);
-        this.entry(0xbd, 4).name("LDA").absoluteX().load().setA(true);
-        this.entry(0xb9, 4).name("LDA").absoluteY().load().setA(true);
-        this.entry(0xa1, 6).name("LDA").indirectX().load().setA(true);
-        this.entry(0xb1, 5).name("LDA").indirectY().load().setA(true);
+        this.entry(0xa9, 2).name("LDA").load("A", immediate);
+        this.entry(0xa5, 3).name("LDA").load("A", zeroPage);
+        this.entry(0xb5, 4).name("LDA").load("A", zeroPageX);
+        this.entry(0xad, 4).name("LDA").load("A", absolute);
+        this.entry(0xbd, 4).name("LDA").load("A", absoluteX);
+        this.entry(0xb9, 4).name("LDA").load("A", absoluteY);
+        this.entry(0xa1, 6).name("LDA").load("A", indirectX);
+        this.entry(0xb1, 5).name("LDA").load("A", indirectY);
         // LDX
-        this.entry(0xa2, 2).name("LDX").immediate().setX();
-        this.entry(0xa6, 3).name("LDX").zeroPage().load().setX();
-        this.entry(0xb6, 3).name("LDX").zeroPageY().load().setX();
-        this.entry(0xae, 3).name("LDX").absolute().load().setX();
-        this.entry(0xbe, 3).name("LDX").absoluteY().load().setX();
+        this.entry(0xa2, 2).name("LDX").load("X", immediate);
+        this.entry(0xa6, 3).name("LDX").load("X", zeroPage);
+        this.entry(0xb6, 4).name("LDX").load("X", zeroPageY);
+        this.entry(0xae, 4).name("LDX").load("X", absolute);
+        this.entry(0xbe, 4).name("LDX").load("X", absoluteY);
         // LDY
-        this.entry(0xa0, 2).name("LDY").immediate().setY();
-        this.entry(0xa4, 3).name("LDY").zeroPage().load().setY();
-        this.entry(0xb4, 3).name("LDY").zeroPageX().load().setY();
-        this.entry(0xac, 3).name("LDY").absolute().load().setY();
-        this.entry(0xbc, 3).name("LDY").absoluteX().load().setY();
+        this.entry(0xa0, 2).name("LDY").load("Y", immediate);
+        this.entry(0xa4, 3).name("LDY").load("Y", zeroPage);
+        this.entry(0xb4, 4).name("LDY").load("Y", zeroPageX);
+        this.entry(0xac, 4).name("LDY").load("Y", absolute);
+        this.entry(0xbc, 4).name("LDY").load("Y", absoluteX);
 
         // STA
-        this.entry(0x85, 3).name("STA").zeroPage().store(cpu => cpu.regA);
-        this.entry(0x95, 4).name("STA").zeroPageX().store(cpu => cpu.regA);
-        this.entry(0x8d, 4).name("STA").absolute().store(cpu => cpu.regA);
-        this.entry(0x9d, 4).name("STA").absoluteX().store(cpu => cpu.regA);
-        this.entry(0x99, 4).name("STA").absoluteY().store(cpu => cpu.regA);
-        this.entry(0x81, 6).name("STA").indirectX().store(cpu => cpu.regA);
-        this.entry(0x91, 5).name("STA").indirectY().store(cpu => cpu.regA);
+        this.entry(0x85, 3).name("STA").store("A", zeroPage);
+        this.entry(0x95, 4).name("STA").store("A", zeroPageX);
+        this.entry(0x8d, 4).name("STA").store("A", absolute);
+        this.entry(0x9d, 4).name("STA").store("A", absoluteX);
+        this.entry(0x99, 4).name("STA").store("A", absoluteY);
+        this.entry(0x81, 6).name("STA").store("A", indirectX);
+        this.entry(0x91, 5).name("STA").store("A", indirectY);
         // STX
-        this.entry(0x86, 3).name("STX").zeroPage().store(cpu => cpu.regX);
-        this.entry(0x96, 4).name("STX").zeroPageY().store(cpu => cpu.regX);
-        this.entry(0x8e, 4).name("STX").absolute().store(cpu => cpu.regX);
+        this.entry(0x86, 3).name("STX").store("X", zeroPage);
+        this.entry(0x96, 4).name("STX").store("X", zeroPageY);
+        this.entry(0x8e, 4).name("STX").store("X", absolute);
         // STY
-        this.entry(0x84, 3).name("STY").zeroPage().store(cpu => cpu.regY);
-        this.entry(0x94, 4).name("STY").zeroPageX().store(cpu => cpu.regY);
-        this.entry(0x8c, 4).name("STY").absolute().store(cpu => cpu.regY);
+        this.entry(0x84, 3).name("STY").store("Y", zeroPage);
+        this.entry(0x94, 4).name("STY").store("Y", zeroPageX);
+        this.entry(0x8c, 4).name("STY").store("Y", absolute);
 
         // TAX
-        this.entry(0xaa, 2).name("TAX").calc((val, cpu) => cpu.regX = cpu.regA);
+        this.entry(0xaa, 2).name("TAX").transfer("A", "X");
         // TXA
-        this.entry(0x8a, 2).name("TXA").calc((val, cpu) => cpu.regA = cpu.regX);
+        this.entry(0x8a, 2).name("TXA").transfer("X", "A");
         // TAY
-        this.entry(0xa8, 2).name("TAY").calc((val, cpu) => cpu.regY = cpu.regA);
+        this.entry(0xa8, 2).name("TAY").transfer("A", "Y");
         // TYA
-        this.entry(0x98, 2).name("TYA").calc((val, cpu) => cpu.regA = cpu.regY);
+        this.entry(0x98, 2).name("TYA").transfer("Y", "A");
         // TXS
-        this.entry(0x9a, 2).name("TXS").setFlag((val, cpu) => cpu.regX);
+        this.entry(0x9a, 2).name("TXS").transfer("X", "Fr");
         // TSX
-        this.entry(0xba, 2).name("TSX").calc((val, cpu) => cpu.regX = cpu.regFr);
+        this.entry(0xba, 2).name("TSX").transfer("Fr", "X");
 
         // PHA
-        this.entry(0x48, 3).name("PHA").pushA();
+        this.entry(0x48, 3).name("PHA").pha();
         // PLA
-        this.entry(0x68, 4).name("PLA").popA();
+        this.entry(0x68, 4).name("PLA").pla();
         // PHP
-        this.entry(0x08, 3).name("PHP").pushP();
+        this.entry(0x08, 3).name("PHP").php();
         // PLP
-        this.entry(0x28, 4).name("PLP").popP();
+        this.entry(0x28, 4).name("PLP").plp();
 
         // NOP
         this.entry(0xea, 2).name("NOP");
     }
 
-    private debugCode: string[][] = [];
-    private debugLog: boolean;
+    private debugCode: string[] = [];
     private errorFlag = false;
 
     public execute(line: number): void {
-        const scanClock = 114;
+        //const scanClock = 114;
+        const scanClock = 114;  // 341PPU / 3:  1PPU=3CPU cycle
         if (line == 241) {
             // VBlank
             if (this.memory.isNmiEnabled) {
-                this.cpuState.setInterrupt("nmi");
-                //this.cycle += this.interrupt("nmi");
+                //this.cpuState.setInterrupt("nmi");
+                this.cycle += this.interrupt("nmi");
                 //this.debugLog = true;
             }
         }
         while (this.cycle < scanClock) {
-            if (this.cpuState.interrupted) {
+            if (this.cpuState.interrupted && !(this.cpuState.regFr & FR_I)) {
                 let type = this.cpuState.interrupted;
                 this.cycle += this.interrupt(type);
-                this.cpuState.setInterrupt("");
-            }
-            // TODO
-            if (this.cpuState.regPc == 0x8ecd) {
-                this.debugLog = true;
+                continue;
             }
             let code = this.memory.read(this.cpuState.regPc);
-            let dbg = [("000" + Number(this.cpuState.regPc).toString(16)).substr(-4), toHex(code)];
-            this.debugCode.push(dbg);
-            if (this.debugCode.length > 10) {
-                this.debugCode.splice(0, 1);
-            }
             if (!this.errorFlag && this.cpuState.regPc < 0x8000) {
                 this.errorFlag = true;
                 console.log(this.debugCode);
@@ -1755,17 +1401,27 @@ export class FamCpu {
                 }
             }
             let ope = this.opeMap[code];
+            if (this.cpuState.regPc < 0x8000) {
+                console.log("ERROR");
+                console.log(this.debugCode);
+            }
             if (ope) {
-                dbg[1] = ope.toString(this.cpuState);
-                this.cycle += ope.exec();
+                if (debugLogFlag && this.cpuState.regPc != 0x8057) {
+                    let log = new CpuTextLogger();
+                    this.cycle += ope.execute(log);
+                    this.debugCode.push(log.toString());
+                    if (this.debugCode.length > 10) {
+                        this.debugCode.splice(0, 1);
+                    }
+                    console.log(log.toString());
+                } else {
+                    this.cycle += ope.execute();
+                }
             } else {
                 console.log("No Code:" + Number(code).toString(16));
                 console.log(this.debugCode);
                 this.cpuState.regPc = (this.cpuState.regPc + 1) & 0xffff;
                 this.cycle += 20;
-            }
-            if (this.debugLog && "8057" != dbg[0]) {
-                console.log(dbg);
             }
         }
         this.cycle -= scanClock;
@@ -1790,11 +1446,15 @@ export class FamCpu {
             default:
                 return 0;
         }
+        if (debugLogFlag) {
+            console.log("INTERRUPT:" + type);
+        }
         this.push(this.cpuState.regPc >> 8);
         this.push(this.cpuState.regPc & 0xff);
         this.push(this.cpuState.regFr);
         this.cpuState.regPc = nextPc;
         this.cpuState.regFr |= FR_I;
+        this.cpuState.setInterrupt("");
         return 6;
     }
 }

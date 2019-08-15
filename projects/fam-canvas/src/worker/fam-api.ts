@@ -101,6 +101,7 @@ export interface IFamAPU {
 export interface FamData {
     ppu: IFamPPU;
     apu: IFamAPU;
+    button: number[];
 }
 
 /**

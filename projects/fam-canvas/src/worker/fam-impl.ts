@@ -130,6 +130,8 @@ class FamPPUImpl implements IFamPPU {
     private rgbColor: Uint32Array;
     private lastBgColor: number = -1;
 
+    private nextSpriteHit: boolean;
+
     constructor(private mode: "vertical" | "horizontal" | "four" = "vertical") {
         this.reset();
     }
@@ -198,7 +200,7 @@ class FamPPUImpl implements IFamPPU {
                 index: addr & 0xfff,
                 buf: this.pattern[(addr & 0x1000) ? 1 : 0]
             };
-        } else if (addr < 0x3eff) {
+        } else if (addr < 0x3f00) {
             return {
                 index: addr & 0x3ff,
                 buf: this.nameTable[(addr >> 10) & 3]
@@ -215,6 +217,10 @@ class FamPPUImpl implements IFamPPU {
     write(addr: number, val: number[]): void;
     write(addr: number, val: Uint8Array): void;
     write(addr: number, val: any): void {
+        // TODO
+        if (addr >= 0x4000) {
+            return;
+        }
         if (typeof val == "number") {
             let buf = this.getBuf(addr);
             buf.buf[buf.index] = val;
@@ -314,6 +320,7 @@ class FamPPUImpl implements IFamPPU {
     }
 
     public scanLine(buf: Uint32Array, line: number): void {
+        this.state.spriteHit = this.nextSpriteHit;
         if (line >= 8 && line < 232) {
             // BG
             if (buf) {
@@ -368,29 +375,34 @@ class FamPPUImpl implements IFamPPU {
                 }
             }
         }
-        if (line < 240) {
+        let ly = (line + 1) % 262;
+        if (ly < 240) {
+            if (ly == 0) {
+                this.state.spriteHit = false;
+                this.nextSpriteHit = false;
+            }
             // Sprite
             let count = 0;
             let sz = (this.config2000.spriteSize << 3) + 8;
             this.state.scanSprite = 0;
-            if (line >= 7 && line < 223) {
+            if (ly >= 8 && ly < 232) {
                 this.spriteBuf.fill(0);
             }
             for (let i = 0; i < 64; i++) {
                 let y = this.spriteTable[i << 2];
-                if (((line - y) & 0xff) < sz) {
-                    // Hit
-                    if (i == 0) {
-                        this.state.spriteHit = true;
-                    }
+                if (((ly - y) & 0xff) < sz) {
                     count++;
                     if (count > 8) {
                         this.state.scanSprite = 1;
                         break;
                     }
-                    if (line >= 7 && line < 223 && this.config2001.sprite) {
+                    if (this.config2001.sprite) {
+                        if ((i > 0 || !this.nextSpriteHit) && (ly < 8 || ly >= 232)) {
+                            // 0爆弾以外は範囲外をスキップ
+                            continue;
+                        }
                         // y-1,patIx, VHP000CC P=0:前,1:後ろ
-                        let dy = (line - y) & 255;
+                        let dy = (ly - y) & 255;
                         let flag = this.spriteTable[(i << 2) + 2];
                         if (flag & 0x80) {
                             // 上下反転
@@ -403,6 +415,18 @@ class FamPPUImpl implements IFamPPU {
                             dy &= 7;
                         }
                         let pat = this.getLinePattern(this.config2000.spritePattern, ch, dy);
+                        if (i == 0 && !this.nextSpriteHit) {
+                            // チェックする
+                            for (let x = 0; x < pat.length; x++) {
+                                if (pat[x]) {
+                                    this.nextSpriteHit = true;
+                                    break;
+                                }
+                            }
+                            if (ly < 8 || ly >= 232) {
+                                continue;
+                            }
+                        }
                         if (flag & 0x40) {
                             // 左右反転
                             pat = pat.reverse();
@@ -419,15 +443,10 @@ class FamPPUImpl implements IFamPPU {
                     }
                 }
             }
-        } else if (line == 261) {
-            // 最後
-            this.state.spriteHit = false;
         } else {
             if (line == 240) {
                 this.state.vblank = true;
-            }
-            if (!this.state.spriteHit && line >= this.spriteBuf[0]) {
-                this.state.spriteHit = true;
+                //this.state.spriteHit = false;
             }
         }
     }
@@ -447,6 +466,10 @@ class FamPPUImpl implements IFamPPU {
      * @param y 
      */
     private getLinePattern(patIx: number, ch: number, y: number): number[] {
+        if (y & 8) {
+            ch++;
+            y -= 8;
+        }
         let low = this.pattern[patIx][ch * 16 + y];
         let hi = this.pattern[patIx][ch * 16 + y + 8];
         let ret: number[] = [];
@@ -461,6 +484,7 @@ export class FamWorkerImpl {
     private famPpu: FamPPUImpl;
     private initType: "power" | "reset" = "power";
     private initParam: any;
+    private button: number[] = [0, 0];
 
     constructor(private famRom: IFamROM) {
         this.famPpu = new FamPPUImpl();
@@ -484,27 +508,33 @@ export class FamWorkerImpl {
             if (this.famRom.init) {
                 this.famRom.init({
                     ppu: this.famPpu,
-                    apu: null
+                    apu: null,
+                    button: this.button
                 }, this.initType, this.initParam);
             }
             this.initType = null;
         }
+        for (let i = 0; i < req.button.length; i++) {
+            this.button[i] = req.button[i];
+        }
         for (let line = 0; line < 262; line++) {
-            if (line == 240 && this.famRom.vBlank) {
+            if (line == 241 && this.famRom.vBlank) {
                 // VBlank
                 this.famRom.vBlank({
                     ppu: this.famPpu,
-                    apu: null
+                    apu: null,
+                    button: this.button
                 });
             }
-            this.famPpu.scanLine(buf, line);
             // HBlank
             if (this.famRom.hBlank) {
                 this.famRom.hBlank({
                     ppu: this.famPpu,
-                    apu: null
+                    apu: null,
+                    button: this.button
                 }, line);
             }
+            this.famPpu.scanLine(buf, line);
         }
         return {
             screen: buf

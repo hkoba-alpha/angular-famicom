@@ -35,6 +35,7 @@ export var NesEmuRom = function (util: FamUtil) {
             if (!this.initFlag) {
                 return;
             }
+            this.memory.checkButton(data.button);
         }
         init(data: FamData, type: "power" | "reset", param?: any): void {
             if (!this.nesRom) {

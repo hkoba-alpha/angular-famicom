@@ -49,7 +49,7 @@ export abstract class FamMachine {
   private runFlag: boolean = false;
 
   // 画像付きフレーム処理が実行中かどうか
-  private frameRunning: boolean = false;
+  private frameRunning: number = 0;
 
   // ボタンフラグ
   private button: number[] = [0, 0];
@@ -110,9 +110,14 @@ export abstract class FamMachine {
 
   protected requestFrame(): void {
     if (this.frameRunning) {
+      this.frameRunning++;
+      if (this.frameRunning > 4) {
+        //console.log("SKIP:" + this.frameRunning);
+        return;
+      }
       this.request({ type: "skip-frame", button: this.button });
     } else {
-      this.frameRunning = true;
+      this.frameRunning = 1;
       this.request({ type: "frame", button: this.button });
     }
   }
@@ -120,7 +125,7 @@ export abstract class FamMachine {
   // フレーム処理が終わったら、もらった応答を返す
   protected response(res: FamResponseMsg): void {
     if (res.screen) {
-      this.frameRunning = false;
+      this.frameRunning = 0;
     }
     this.eventData.emit(res);
   }

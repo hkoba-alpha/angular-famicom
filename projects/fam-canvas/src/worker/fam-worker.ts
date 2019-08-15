@@ -2,15 +2,6 @@ import { FamRequestMsg } from "./fam-msg";
 import { FamWorkerImpl } from "./fam-impl";
 import { FamUtil } from './fam-util';
 
-class MyTest {
-
-}
-class MyTest2 extends MyTest {
-    constructor() {
-        super();
-    }
-}
-
 var famWorker: FamWorkerImpl;
 
 // コンパイルエラー対処
@@ -50,8 +41,10 @@ addEventListener("message", $event => {
                 let res = famWorker.execute(req);
                 if (res.screen) {
                     postMessage(res, [res.screen.buffer]);
+                    //console.log("POST:FRAME");
                 } else {
                     postMessage(res);
+                    //console.log("POST:SKIP");
                 }
             }
         } else if (req.type == "reset") {
