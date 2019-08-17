@@ -65,6 +65,8 @@ export interface ISquareSound {
     setVolume(duty: number, halt: boolean, volume: number): ISquareSound;
     setEnvelope(duty: number, loop: boolean, period: number): ISquareSound;
     setTimer(lenIndex: number, timer: number): ISquareSound;
+    // 下位8bitを設定する
+    setTimerRow(low: number): ISquareSound;
     /**
      * Sweep設定
      * @param enableFlag 有効フラグ
@@ -73,6 +75,9 @@ export interface ISquareSound {
      * @param value スイープ量[0-7]
      */
     setSweep(enableFlag: boolean, period: number, mode: number, value: number): ISquareSound;
+
+    setEnabled(flag: boolean): ISquareSound;
+    isPlaing(): boolean;
 }
 
 /**
@@ -85,6 +90,44 @@ export interface ITriangleSound {
     setTimer(lenIndex: number, timerCount: number): ITriangleSound;
 
     setTimerCount(count: number): ITriangleSound;
+
+    setEnabled(flag: boolean): ITriangleSound;
+    isPlaing(): boolean;
+}
+
+export interface INoiseSound {
+    setVolume(stopFlag: boolean, volume: number): INoiseSound;
+
+	/**
+	 * エンベロープを設定する. ボリュームは無効となる.
+	 * 
+	 * @param loopFlag
+	 *            ループして続けるかのフラグ
+	 * @param period
+	 *            周期:[0-15]
+	 * @return
+	 */
+    setEnvelope(loopFlag: boolean, period: number): INoiseSound;
+
+    setRandomMode(shortFlag: number, timerIndex: number): INoiseSound;
+
+    setLength(lengthIndex: number): INoiseSound;
+
+    setEnabled(flag: number): INoiseSound;
+    isPlaing(): boolean;
+}
+
+export interface IDeltaSound {
+
+    setPeriod(loopFlag: boolean, periodIndex: number): IDeltaSound;
+
+    setDelta(delta: number): IDeltaSound;
+
+    setSample(data: number[] | Uint8Array, start: number, length: number): IDeltaSound;
+
+    setEnabled(flag: boolean): IDeltaSound;
+
+    isPlaing(): boolean;
 }
 
 /**
@@ -92,7 +135,11 @@ export interface ITriangleSound {
  */
 export interface IFamAPU {
     // mode: 0=4Step, 1=5Step
-    setMode(mode: number): void;
+    setMode(mode: number): IFamAPU;
+    readonly square: [ISquareSound, ISquareSound];
+    readonly triangle: ITriangleSound;
+    readonly noise: INoiseSound;
+    readonly delta: IDeltaSound;
 }
 
 /**

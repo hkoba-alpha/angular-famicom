@@ -288,6 +288,7 @@ class ApuIoMemory implements IFamMemory {
     private lastButton: number[] = [0, 0];
     private lastWrite: number[] = [0, 0];
     private buttonIndex: number[] = [0, 0];
+    private squareLow: number[] = [0, 0];
 
     constructor(private famData: FamData, private parent: FamMemory) {
     }
@@ -313,6 +314,39 @@ class ApuIoMemory implements IFamMemory {
                 this.buttonIndex[ix] = 0;
             }
             this.lastWrite[ix] = val;
+        } else if (addr < 8) {
+            // Square
+            let ix = addr >> 2;
+            let sq = this.famData.apu.square[ix];
+            //console.log("400" + addr + "=" + val);
+            switch (addr & 3) {
+                case 0:
+                    if (val & 0x10) {
+                        // Volume
+                        sq.setVolume(val >> 6, (val & 0x20) > 0, val & 15);
+                    } else {
+                        // Emvelope
+                        sq.setEnvelope(val >> 6, (val & 0x20) > 0, val & 15);
+                    }
+                    break;
+                case 1:
+                    sq.setSweep((val & 0x80) > 0, (val >> 4) & 7, (val >> 3) & 1, val & 7);
+                    break;
+                case 2:
+                    this.squareLow[ix] = val;
+                    sq.setTimerRow(val);
+                    break;
+                case 3:
+                    sq.setTimer(val >> 3, ((val & 7) << 8) | this.squareLow[ix]);
+                    break;
+            }
+        } else if (addr == 0x15) {
+            // APU Control
+            this.famData.apu.square[0].setEnabled((val & 1) > 0);
+            this.famData.apu.square[1].setEnabled((val & 2) > 0);
+        } else if (addr == 0x17) {
+            // mi------
+            this.famData.apu.setMode(val >> 7);
         }
     }
     read(addr: number): number {
@@ -322,6 +356,16 @@ class ApuIoMemory implements IFamMemory {
             let flag = (this.lastButton[ix] | this.famData.button[ix]) & (1 << this.buttonIndex[ix]);
             this.buttonIndex[ix]++;
             return flag ? 1 : 0;
+        } else if (addr == 0x15) {
+            // apu state read
+            let ret = 0;
+            if (this.famData.apu.square[0].isPlaing) {
+                ret = 1;
+            }
+            if (this.famData.apu.square[1].isPlaing) {
+                ret |= 2;
+            }
+            return ret;
         }
         return 0;
     }

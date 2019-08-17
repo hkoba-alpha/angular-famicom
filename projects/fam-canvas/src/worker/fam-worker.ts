@@ -40,10 +40,10 @@ addEventListener("message", $event => {
             if (famWorker) {
                 let res = famWorker.execute(req);
                 if (res.screen) {
-                    postMessage(res, [res.screen.buffer]);
+                    postMessage(res, [res.screen.buffer, res.sound.buffer]);
                     //console.log("POST:FRAME");
                 } else {
-                    postMessage(res);
+                    postMessage(res, [res.sound.buffer]);
                     //console.log("POST:SKIP");
                 }
             }

@@ -2,6 +2,9 @@ import { Component, OnInit, Input, ViewChild, ElementRef, HostListener } from '@
 import { FamCanvasService, FamMachine, famKeyConfig } from './fam-canvas.service';
 import { FamResponseMsg } from '../worker/fam-msg';
 
+// APUの1/60のデータ数
+const SAMPLE_RATE = 200;
+
 @Component({
   selector: 'fam-canvas',
   template: `
@@ -64,14 +67,14 @@ export class FamCanvasComponent implements OnInit {
   onKeyDown($event: KeyboardEvent): void {
     let btn = famKeyConfig[$event.code];
     if (btn && this.famMachine) {
-      console.log($event);
+      //console.log($event);
       this.famMachine.press(btn.pad, btn.button);
     }
     $event.preventDefault();
   }
   onKeyUp($event: any): void {
     let btn = famKeyConfig[$event.code];
-    console.log($event);
+    //console.log($event);
     if (btn && this.famMachine) {
       this.famMachine.release(btn.pad, btn.button);
     }

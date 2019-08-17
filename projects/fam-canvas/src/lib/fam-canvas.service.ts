@@ -54,19 +54,17 @@ export abstract class FamMachine {
   // ボタンフラグ
   private button: number[] = [0, 0];
 
-  // APU関連
-  private audioContext: any;
-  private audioSrc: any;
-  private audioData: any;
+  private soundList: Uint8Array[] = [];
+  private audioContext: AudioContext;
+  // 1/60秒間のサンプル数
+  private sampleRate: number;
+  // 次に再生するインデックス
+  private sampleIndex: number;
+
+  // 音声がなかった時間
+  private skipCount: number = 1;
 
   constructor() {
-    this.audioContext = new (window["webkitAudioContext"] || window["AudioContext"])();
-    let buf = this.audioContext.createBuffer(1, 22050 / 4, 22050);
-    this.audioData = buf.getChannelData(0);
-    this.audioSrc = this.audioContext.createBufferSource();
-    this.audioSrc.buffer = buf;
-    this.audioSrc.loop = true;
-    //this.audioSrc.connect(this.audioContext.destination);
   }
 
   public setInitParam(param: any): void {
@@ -78,6 +76,7 @@ export abstract class FamMachine {
   }
 
   public start(): void {
+    this.soundOn();
     if (!this.runFlag) {
       let func = () => {
         if (this.runFlag) {
@@ -87,12 +86,15 @@ export abstract class FamMachine {
       }
       this.runFlag = true;
       func();
-      //this.audioSrc.start();
     }
   }
   public stop(): void {
-    //this.audioSrc.stop();
     this.runFlag = false;
+    if (this.audioContext) {
+      if (this.audioContext.state == "running") {
+        this.audioContext.suspend().then();
+      }
+    }
   }
   public reset(): void {
     this.request({ type: "reset", button: this.button });
@@ -127,6 +129,12 @@ export abstract class FamMachine {
     if (res.screen) {
       this.frameRunning = 0;
     }
+    if (res.sound) {
+      this.soundList.push(res.sound);
+      if (this.soundList.length > 10) {
+        this.soundList.splice(0, 1);
+      }
+    }
     this.eventData.emit(res);
   }
 
@@ -142,6 +150,64 @@ export abstract class FamMachine {
   }
   public release(ix: number, btn: number): void {
     this.button[ix] &= ~btn;
+  }
+
+  public soundOn(): void {
+    if (!this.audioContext) {
+      this.audioContext = new (window["AudioContext"] || window["webkitAudioContext"])();
+      console.log("SampleRate=" + this.audioContext.sampleRate);
+      console.log("1/60=" + this.audioContext.sampleRate / 60);
+      let node = this.audioContext.createScriptProcessor(1024, 1, 1);
+      this.sampleRate = Math.floor(this.audioContext.sampleRate / 60);
+      node.onaudioprocess = evt => this.onAudioProcess(evt);
+      let src = this.audioContext.createBufferSource();
+      //let src = this.audioContext.createOscillator();
+      //src.connect(this.audioContext.destination);
+      src.loop = true;
+      src.connect(node);
+      node.connect(this.audioContext.destination);
+      src.start(0);
+    } else {
+      console.log("status=" + this.audioContext.state);
+      if (this.audioContext.state == "suspended") {
+        this.audioContext.resume().then();
+      }
+    }
+  }
+
+  private onAudioProcess(evt: AudioProcessingEvent): void {
+    let inbuf = evt.inputBuffer.getChannelData(0);
+
+    let len = evt.outputBuffer.length;
+    let buf = evt.outputBuffer.getChannelData(0);
+    if (this.skipCount || this.soundList.length == 0) {
+      if (this.skipCount % 20 == 1) {
+        console.log("skip=" + this.skipCount);
+      }
+      if (this.soundList.length < 3) {
+        this.skipCount++;
+        for (let i = 0; i < len; i++) {
+          buf[i] = inbuf[i];
+        }
+        return;
+      }
+      this.skipCount = 0;
+      this.sampleIndex = 0;
+    }
+    let data = this.soundList[0];
+    for (let i = 0; i < len; i++) {
+      buf[i] = data[Math.floor(this.sampleIndex * data.length / this.sampleRate)] / 128.0;
+      this.sampleIndex++;
+      if (this.sampleIndex >= this.sampleRate) {
+        this.sampleIndex = 0;
+        this.soundList.splice(0, 1);
+        if (this.soundList.length == 0) {
+          this.skipCount = 1;
+          break;
+        }
+        data = this.soundList[0];
+      }
+    }
   }
 }
 

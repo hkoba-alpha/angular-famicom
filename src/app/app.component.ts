@@ -80,8 +80,8 @@ export class AppComponent implements OnInit {
     }, true);
     this.famMachine.setInitParam({ msg: "test param", data: [1,2,3]});
     */
-   this.famMachine = this.famService.createMachine(NesEmuRom, false);
-   this.famMachine.setInitParam("/assets/smario.nes");
+    this.famMachine = this.famService.createMachine(NesEmuRom, false);
+    this.famMachine.setInitParam("/assets/smario.nes");
   }
 
   onStart(): void {
@@ -90,67 +90,8 @@ export class AppComponent implements OnInit {
     }
   }
   onStop(): void {
-    if (this.audioSrc) {
-      this.audioSrc.stop();
-    }
     if (this.famMachine) {
       this.famMachine.stop();
-    }
-  }
-
-  private audioContext: any;
-  private audioSrc: any;
-  private audioBuf: any;
-
-  onPlay() {
-    if (!this.audioContext) {
-      this.audioContext = new (window["webkitAudioContext"] || window["AudioContext"])();
-      let ctx = this.audioContext;
-      console.log(ctx.sampleRate);
-      //ctx.sampleRate = 48000;
-      let buf = ctx.createBuffer(1, 22050, 22050);
-      let data = buf.getChannelData(0);
-      for (let i = 0; i < data.length; i++) {
-        if ((i % 100) < 50) {
-          data[i] = 1;
-        } else {
-          data[i] = 0;
-        }
-      }
-      let src = ctx.createBufferSource();
-      console.log(Object.keys(src));
-      src.buffer = buf;
-      src.loop = false;
-      src.connect(ctx.destination);
-      src.start(0);
-      this.audioBuf = data;
-      this.audioSrc = src;
-    } else {
-      let ctx = this.audioContext;
-      let buf = ctx.createBuffer(1, 22050, 22050);
-      let data = buf.getChannelData(0);
-      for (let i = 0; i < data.length; i++) {
-        if ((i % 100) < 50) {
-          data[i] = 1;
-        } else {
-          data[i] = 0;
-        }
-      }
-      let src = ctx.createBufferSource();
-      console.log(Object.keys(src));
-      src.buffer = buf;
-      src.loop = false;
-      src.connect(ctx.destination);
-      this.audioBuf = data;
-      this.audioSrc = src;
-      for (let i = 0; i < data.length; i++) {
-        if ((i % 80) < 40) {
-          data[i] = 1;
-        } else {
-          data[i] = 0;
-        }
-      }
-      src.start(0);
     }
   }
 }
