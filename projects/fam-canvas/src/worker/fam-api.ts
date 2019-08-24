@@ -66,7 +66,7 @@ export interface ISquareSound {
     setEnvelope(duty: number, loop: boolean, period: number): ISquareSound;
     setTimer(lenIndex: number, timer: number): ISquareSound;
     // 下位8bitを設定する
-    setTimerRow(low: number): ISquareSound;
+    setTimerLow(low: number): ISquareSound;
     /**
      * Sweep設定
      * @param enableFlag 有効フラグ
@@ -88,8 +88,7 @@ export interface ITriangleSound {
     setLinear(loop: boolean, lineCount: number): ITriangleSound;
 
     setTimer(lenIndex: number, timerCount: number): ITriangleSound;
-
-    setTimerCount(count: number): ITriangleSound;
+    setTimerLow(low: number): ITriangleSound;
 
     setEnabled(flag: boolean): ITriangleSound;
     isPlaing(): boolean;
@@ -113,7 +112,7 @@ export interface INoiseSound {
 
     setLength(lengthIndex: number): INoiseSound;
 
-    setEnabled(flag: number): INoiseSound;
+    setEnabled(flag: boolean): INoiseSound;
     isPlaing(): boolean;
 }
 
@@ -135,7 +134,7 @@ export interface IDeltaSound {
  */
 export interface IFamAPU {
     // mode: 0=4Step, 1=5Step
-    setMode(mode: number): IFamAPU;
+    setMode(mode: number, irq?: (apu: IFamAPU) => void): IFamAPU;
     readonly square: [ISquareSound, ISquareSound];
     readonly triangle: ITriangleSound;
     readonly noise: INoiseSound;

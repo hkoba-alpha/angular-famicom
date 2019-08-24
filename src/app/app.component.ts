@@ -80,8 +80,9 @@ export class AppComponent implements OnInit {
     }, true);
     this.famMachine.setInitParam({ msg: "test param", data: [1,2,3]});
     */
-    this.famMachine = this.famService.createMachine(NesEmuRom, false);
-    this.famMachine.setInitParam("/assets/smario.nes");
+    this.famMachine = this.famService.createMachine(NesEmuRom, true);
+    //this.famMachine.setInitParam("/assets/smario.nes");
+    this.famMachine.setInitParam("/assets/dq1.nes");
   }
 
   onStart(): void {

@@ -176,8 +176,6 @@ export abstract class FamMachine {
   }
 
   private onAudioProcess(evt: AudioProcessingEvent): void {
-    let inbuf = evt.inputBuffer.getChannelData(0);
-
     let len = evt.outputBuffer.length;
     let buf = evt.outputBuffer.getChannelData(0);
     if (this.skipCount || this.soundList.length == 0) {
@@ -187,7 +185,7 @@ export abstract class FamMachine {
       if (this.soundList.length < 3) {
         this.skipCount++;
         for (let i = 0; i < len; i++) {
-          buf[i] = inbuf[i];
+          buf[i] = 0;
         }
         return;
       }
@@ -196,13 +194,15 @@ export abstract class FamMachine {
     }
     let data = this.soundList[0];
     for (let i = 0; i < len; i++) {
-      buf[i] = data[Math.floor(this.sampleIndex * data.length / this.sampleRate)] / 128.0;
+      buf[i] = data[Math.floor(this.sampleIndex * data.length / this.sampleRate)] / 255.0;
       this.sampleIndex++;
       if (this.sampleIndex >= this.sampleRate) {
         this.sampleIndex = 0;
         this.soundList.splice(0, 1);
         if (this.soundList.length == 0) {
-          this.skipCount = 1;
+          if (i < len - 1) {
+            this.skipCount = 1;
+          }
           break;
         }
         data = this.soundList[0];

@@ -3,7 +3,7 @@ import { FamData, IFamPPU } from "./fam-api";
 const PRG_SIZE = 0x4000;
 const CHR_SIZE = 0x2000;
 
-var debugLogFlag = false;
+var debugLogFlag = 0;
 
 /**
  * NES-ROMクラス
@@ -194,9 +194,6 @@ class PpuMemory implements IFamMemory {
                 this.scrollPos[this.scrollIx] = val;
                 if (this.scrollIx) {
                     this.famPpu.setScroll(this.scrollPos[0], this.scrollPos[1]);
-                    if (this.scrollPos[0] && this.famPpu["config2000"].nameTable) {
-                        //debugLogFlag = true;
-                    }
                 }
                 this.scrollIx ^= 1;
                 if (this.reg.w) {
@@ -238,7 +235,12 @@ class PpuMemory implements IFamMemory {
                 break;
             case 7: // 2007
                 //console.log("WritePPU:" + Number(this.ppuAddr).toString(16) + " <= " + Number(val).toString(16));
-                this.famPpu.write(this.ppuAddr, val);
+                if (this.ppuAddr < 0x3f00 || (this.ppuAddr & 3)) {
+                    this.famPpu.write(this.ppuAddr, val);
+                } else {
+                    // Palette
+                    this.famPpu.write(this.ppuAddr & ~0x10, val);
+                }
                 /*
                 if (this.ppuAddr < 0x2000 || this.ppuAddr >= 0x4000) {
                     console.log("PPU[" + Number(this.ppuAddr).toString(16) + "]=" + val);
@@ -289,8 +291,12 @@ class ApuIoMemory implements IFamMemory {
     private lastWrite: number[] = [0, 0];
     private buttonIndex: number[] = [0, 0];
     private squareLow: number[] = [0, 0];
+    private triangleRow: number = 0;
+    private irqEnableFlag: boolean = false;
+    private frameIrqFlag: boolean = false;
 
     constructor(private famData: FamData, private parent: FamMemory) {
+        this.write(0x17, 0);
     }
 
     public checkButton(button: number[]): void {
@@ -305,7 +311,7 @@ class ApuIoMemory implements IFamMemory {
             for (let i = 0; i < 256; i++) {
                 this.famData.ppu.writeSprite(i, this.parent.read(memAddr + i));
             }
-        } else if (addr == 0x16 || addr == 0x17) {
+        } else if (addr == 0x16) {
             // Controller
             let ix = addr - 0x16;
             if (!val && this.lastWrite[ix]) {
@@ -318,7 +324,9 @@ class ApuIoMemory implements IFamMemory {
             // Square
             let ix = addr >> 2;
             let sq = this.famData.apu.square[ix];
-            //console.log("400" + addr + "=" + val);
+            if (ix == 1) {
+                //console.log("400" + addr + "=" + val);
+            }
             switch (addr & 3) {
                 case 0:
                     if (val & 0x10) {
@@ -334,20 +342,69 @@ class ApuIoMemory implements IFamMemory {
                     break;
                 case 2:
                     this.squareLow[ix] = val;
-                    sq.setTimerRow(val);
+                    sq.setTimerLow(val);
                     break;
                 case 3:
                     sq.setTimer(val >> 3, ((val & 7) << 8) | this.squareLow[ix]);
+                    break;
+            }
+        } else if (addr < 12) {
+            // Triangle
+            switch (addr) {
+                case 8:
+                    this.famData.apu.triangle.setLinear((val & 0x80) > 0, val & 0x7f);
+                    break;
+                case 10:
+                    this.triangleRow = val;
+                    this.famData.apu.triangle.setTimerLow(val);
+                    break;
+                case 11:
+                    this.famData.apu.triangle.setTimer(val >> 3, ((val & 7) << 8) | this.triangleRow);
+                    break;
+            }
+        } else if (addr < 16) {
+            // Noise
+            switch (addr) {
+                case 12:
+                    if (val & 0x10) {
+                        // Volume
+                        this.famData.apu.noise.setVolume((val & 0x20) > 0, val & 15);
+                    } else {
+                        // Envelope
+                        this.famData.apu.noise.setEnvelope((val & 0x20) > 0, val & 15);
+                    }
+                    break;
+                case 14:
+                    this.famData.apu.noise.setRandomMode(val >> 7, val & 15);
+                    break;
+                case 15:
+                    this.famData.apu.noise.setLength(val >> 3);
                     break;
             }
         } else if (addr == 0x15) {
             // APU Control
             this.famData.apu.square[0].setEnabled((val & 1) > 0);
             this.famData.apu.square[1].setEnabled((val & 2) > 0);
+            this.famData.apu.triangle.setEnabled((val & 4) > 0);
+            this.famData.apu.noise.setEnabled((val & 8) > 0);
         } else if (addr == 0x17) {
             // mi------
-            this.famData.apu.setMode(val >> 7);
+            this.irqEnableFlag = (val & 0xc0) == 0;
+            this.frameIrqFlag = false;
+            this.famData.apu.setMode(val >> 7, this.irqEnableFlag ? () => {
+                // IRQ CALLBACK
+                this.frameIrqFlag = true;
+            } : null);
         }
+    }
+    get isIrqEnabled(): boolean {
+        return this.irqEnableFlag;
+    }
+    get isFrameIrq(): boolean {
+        return this.frameIrqFlag;
+    }
+    public clearFrameIrq(): void {
+        this.frameIrqFlag = false;
     }
     read(addr: number): number {
         if (addr == 0x16 || addr == 0x17) {
@@ -359,11 +416,20 @@ class ApuIoMemory implements IFamMemory {
         } else if (addr == 0x15) {
             // apu state read
             let ret = 0;
-            if (this.famData.apu.square[0].isPlaing) {
+            if (this.famData.apu.square[0].isPlaing()) {
                 ret = 1;
             }
-            if (this.famData.apu.square[1].isPlaing) {
+            if (this.famData.apu.square[1].isPlaing()) {
                 ret |= 2;
+            }
+            if (this.famData.apu.triangle.isPlaing()) {
+                ret |= 4;
+            }
+            if (this.famData.apu.noise.isPlaing()) {
+                ret |= 8;
+            }
+            if (this.irqEnableFlag) {
+                ret |= 0x40;
             }
             return ret;
         }
@@ -465,6 +531,10 @@ class PrgMemory implements IFamMemory {
 
     write(addr: number, val: number): void {
         if (this.manager) {
+            // TODO dummy
+            if (val == 50) {
+                //debugLogFlag = 2;
+            }
             this.manager.write(this.parent, addr + this.addr, val);
         }
     }
@@ -496,7 +566,12 @@ export class FamMemory extends MemManager {
     public get isNmiEnabled(): boolean {
         return this.ppuMem.isNmiEnabled;
     }
-
+    public get isFrameIrq(): boolean {
+        return this.ioMem.isFrameIrq;
+    }
+    public clearFrameIrq(): void {
+        this.ioMem.clearFrameIrq();
+    }
     public setPrgMemory(addr: number, mem: Uint8Array): FamMemory {
         this.setMemory(new PrgMemory(this, addr, mem, this.manager), addr, addr + mem.length);
         return this;
@@ -1041,7 +1116,9 @@ class CpuInstruction {
     }
     public brk(): CpuInstruction {
         this.proc.push(data => {
-            data.state.setInterrupt("brk");
+            if (!(data.state.regFr & FR_I)) {
+                data.state.setInterrupt("brk");
+            }
             data.nextPc++;
             return data;
         });
@@ -1430,12 +1507,18 @@ export class FamCpu {
             }
         }
         while (this.cycle < scanClock) {
-            if (this.cpuState.interrupted && !(this.cpuState.regFr & FR_I)) {
+            if (this.memory.isFrameIrq && !(this.cpuState.regFr & FR_I)) {
+                // IRQが発行できるようになるまでクリアしてはいけない
+                this.cpuState.setInterrupt("irq");
+                this.memory.clearFrameIrq();
+            }
+            if (this.cpuState.interrupted) {
                 let type = this.cpuState.interrupted;
                 this.cycle += this.interrupt(type);
                 continue;
             }
             let code = this.memory.read(this.cpuState.regPc);
+            /*
             if (!this.errorFlag && this.cpuState.regPc < 0x8000) {
                 this.errorFlag = true;
                 console.log(this.debugCode);
@@ -1444,20 +1527,24 @@ export class FamCpu {
                     console.log(Number(i).toString(16) + ":" + Number(this.memory.read(i)).toString(16));
                 }
             }
-            let ope = this.opeMap[code];
             if (this.cpuState.regPc < 0x8000) {
                 console.log("ERROR");
                 console.log(this.debugCode);
             }
+            */
+            let ope = this.opeMap[code];
             if (ope) {
-                if (debugLogFlag && this.cpuState.regPc != 0x8057) {
+                if (debugLogFlag) {
                     let log = new CpuTextLogger();
+                    let pc = this.cpuState.regPc;
                     this.cycle += ope.execute(log);
                     this.debugCode.push(log.toString());
                     if (this.debugCode.length > 10) {
                         this.debugCode.splice(0, 1);
                     }
-                    console.log(log.toString());
+                    if (debugLogFlag > 1) {
+                        console.log(log.toString());
+                    }
                 } else {
                     this.cycle += ope.execute();
                 }
@@ -1483,6 +1570,10 @@ export class FamCpu {
                 this.cpuState.regFr &= ~FR_B;
                 nextPc = this.memory.read(0xfffa) | (this.memory.read(0xfffb) << 8);
                 break;
+            case "irq":
+                this.cpuState.regFr &= ~FR_B;
+                nextPc = this.memory.read(0xfffe) | (this.memory.read(0xffff) << 8);
+                break;
             case "brk":
                 this.cpuState.regFr |= FR_B;
                 nextPc = this.memory.read(0xfffe) | (this.memory.read(0xffff) << 8);
@@ -1490,7 +1581,7 @@ export class FamCpu {
             default:
                 return 0;
         }
-        if (debugLogFlag) {
+        if (debugLogFlag > 1) {
             console.log("INTERRUPT:" + type);
         }
         this.push(this.cpuState.regPc >> 8);

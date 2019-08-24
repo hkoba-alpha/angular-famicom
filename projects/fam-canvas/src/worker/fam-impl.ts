@@ -217,10 +217,6 @@ class FamPPUImpl implements IFamPPU {
     write(addr: number, val: number[]): void;
     write(addr: number, val: Uint8Array): void;
     write(addr: number, val: any): void {
-        // TODO
-        if (addr >= 0x4000) {
-            return;
-        }
         if (typeof val == "number") {
             let buf = this.getBuf(addr);
             buf.buf[buf.index] = val;
@@ -325,7 +321,8 @@ class FamPPUImpl implements IFamPPU {
             // BG
             if (buf) {
                 // 設定する
-                let bg = this.getColor(this.palette[16] & 63);
+                //let bg = this.getColor(this.palette[16] & 63);
+                let bg = this.getColor(this.palette[0] & 63);
                 let nmix = this.config2000.nameTable;
                 let yy = line + this.scrollY;
                 if (yy >= 240) {
@@ -575,15 +572,24 @@ const noiseTimeIndex = [
 ];
 
 const squareSampleDataList = [
-    [0, 1, 0, 0, 0, 0, 0, 0],
-    [0, 1, 1, 0, 0, 0, 0, 0],
-    [0, 1, 1, 1, 1, 0, 0, 0],
-    [1, 0, 0, 1, 1, 1, 1, 1]
+    [0, 0, 0, 0, 0, 0, 0, 1],
+    [0, 0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 1, 1, 1, 1],
+    [0, 0, 1, 1, 1, 1, 1, 1]
+    /*
+     [0, 1, 0, 0, 0, 0, 0, 0],
+     [0, 1, 1, 0, 0, 0, 0, 0],
+     [0, 1, 1, 1, 0, 0, 0, 0],
+     [1, 0, 0, 1, 1, 1, 1, 1]
+    [0, 0, 0, 0, 1, 0, 0, 0],
+    [0, 0, 0, 1, 1, 0, 0, 0],
+    [0, 0, 1, 1, 1, 1, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 0]
+     */
 ];
 const triangleSampleData = [
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
-    14, 15, 15, 14, 13, 12, 11, 10, 9, 8, 7,
-    6, 5, 4, 3, 2, 1, 0, 0
+    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 ];
 
 
@@ -613,7 +619,7 @@ for (let i = 0; i < SAMPLE_RATE; i++) {
 class SquareSoundImpl implements ISquareSound {
     private output = new Uint8Array(SAMPLE_RATE);
 
-    private lengthCounter: number = 1;
+    private lengthCounter: number = 0;
     private timerCounter: number = 0;
     private loopFlag: boolean = false;
     private timerIndex: number = 0;
@@ -651,6 +657,8 @@ class SquareSoundImpl implements ISquareSound {
         value: number;
         count: number;
     };
+    private nextSample: number[];
+    private changeIndex: number;
 
     constructor(private channel: number) {
     }
@@ -676,15 +684,33 @@ class SquareSoundImpl implements ISquareSound {
     setTimer(lenIndex: number, timer: number): ISquareSound {
         this.nextTimer = {
             length: lengthIndexList[lenIndex],
-            timer: timer+1
+            timer: timer + 1
+        }
+        if (this.envelopeData) {
+            this.envelopeData.count = this.envelopeData.period;
+            this.volume = 15;
+        }
+        if (timer < 7 || timer > 0x7fe) {
+            this.lengthCounter = 0;
+            this.nextTimer = null;
         }
         return this;
     }
-    setTimerRow(row: number): ISquareSound {
+    setTimerLow(row: number): ISquareSound {
         this.nextTimer = {
-            timer: (this.timerCounter & 0xff00) | (row & 255),
+            timer: (((this.timerCounter - 1) & 0xff00) | (row & 255)) + 1,
             length: this.lengthCounter
         }
+        if (this.nextTimer.timer < 8 || this.nextTimer.timer > 0x7ff) {
+            this.lengthCounter = 0;
+            this.nextTimer = null;
+        }
+        /*
+        if (this.envelopeData) {
+            this.envelopeData.count = this.envelopeData.period;
+            this.volume = 15;
+        }
+        */
         return this;
     }
     setSweep(enableFlag: boolean, period: number, mode: number, value: number): ISquareSound {
@@ -706,26 +732,44 @@ class SquareSoundImpl implements ISquareSound {
         return this.lengthCounter > 0;
     }
 
+    private changeDuty(duty: number): void {
+        /*
+        this.sample = squareSampleDataList[duty];
+        this.timerIndex = 0;
+        this.timerOffset = 0;
+        */
+        this.nextSample = squareSampleDataList[duty];
+        if (this.nextSample == this.sample) {
+            this.nextSample = null;
+            return;
+        }
+        this.changeIndex = 0;
+        for (let i = 2; i < this.sample.length; i++) {
+            if (this.sample[i] && this.nextSample[i]) {
+                this.changeIndex = i;
+                break;
+            }
+        }
+    }
+
     public getOutput(l: boolean, e: boolean): Uint8Array {
         if (this.nextTimer) {
-            /*
             if (this.timerCounter) {
                 this.timerOffset = Math.floor(this.timerOffset * this.nextTimer.timer / this.timerCounter);
             }
-            */
             this.timerCounter = this.nextTimer.timer;
             this.lengthCounter = this.nextTimer.length;
-            this.timerOffset = 0;
+            //this.timerOffset = 0;
             this.nextTimer = null;
         }
         if (this.nextVolume) {
             this.envelopeData = null;
-            this.sample = squareSampleDataList[this.nextVolume.duty];
+            this.changeDuty(this.nextVolume.duty);
             this.loopFlag = this.nextVolume.halt;
             this.volume = this.nextVolume.volume;
             this.nextVolume = null;
         } else if (this.nextEnvelope) {
-            this.sample = squareSampleDataList[this.nextEnvelope.duty];
+            this.changeDuty(this.nextEnvelope.duty);
             this.loopFlag = this.nextEnvelope.loop;
             this.volume = 15;
             this.envelopeData = {
@@ -748,7 +792,7 @@ class SquareSoundImpl implements ISquareSound {
             this.nextSweep = null;
         }
         if (l) {
-            if (this.loopFlag) {
+            if (!this.loopFlag) {
                 if (this.lengthCounter > 0) {
                     this.lengthCounter--;
                 } else {
@@ -759,15 +803,27 @@ class SquareSoundImpl implements ISquareSound {
                 this.sweepData.count--;
                 if (this.sweepData.count == 0) {
                     if (this.sweepData.value) {
+                        let newTimer: number;
                         if (this.sweepData.mode) {
                             // 尻上がり
-                            this.timerCounter = this.timerCounter - (this.timerCounter >> this.sweepData.value);
+                            newTimer = this.timerCounter - (this.timerCounter >> this.sweepData.value);
+                            if (!this.channel) {
+                                newTimer--;
+                            }
                         } else {
                             // しり下がり
-                            this.timerCounter = this.timerCounter + (this.timerCounter >> this.sweepData.value);
+                            newTimer = this.timerCounter + (this.timerCounter >> this.sweepData.value);
                         }
+                        if (this.timerCounter) {
+                            this.timerOffset = Math.floor(this.timerOffset * newTimer / this.timerCounter);
+                        }
+                        this.timerCounter = newTimer;
                     }
                     this.sweepData.count = this.sweepData.period;
+                    if (this.timerCounter < 8 || this.timerCounter > 0x7ff) {
+                        this.lengthCounter = 0;
+                        this.sweepData = null;
+                    }
                 }
             }
         }
@@ -785,19 +841,26 @@ class SquareSoundImpl implements ISquareSound {
             }
         }
         let size = this.timerCounter * 2;
+        /*
         if (this.timerCounter < 8 || this.timerCounter > 0x7ff) {
             this.lengthCounter = 0;
             this.sweepData = null;
         }
+        */
         for (let i = 0; i < SAMPLE_RATE; i++) {
             if (this.lengthCounter) {
+                this.output[i] = this.sample[this.timerIndex] * this.volume;
                 this.timerOffset += addClock[i];
                 if (this.timerOffset >= size) {
                     // 移動する
                     this.timerIndex = (this.timerIndex + Math.floor(this.timerOffset / size)) % this.sample.length;
                     this.timerOffset %= size;
                 }
-                this.output[i] = this.sample[this.timerIndex] * this.volume;
+                if (this.nextSample && this.timerIndex >= this.changeIndex) {
+                    this.sample = this.nextSample;
+                    this.nextSample = null;
+                }
+                //this.output[i] = squareSampleDataList[2][this.timerIndex] * this.volume;
             } else {
                 this.output[i] = 0;
             }
@@ -809,49 +872,249 @@ class SquareSoundImpl implements ISquareSound {
 class TriangleSoundImpl implements ITriangleSound {
     private output = new Uint8Array(SAMPLE_RATE);
 
+    private loopFlag: boolean = false;
+    private lengthCounter: number = 0;
+    private timerCounter: number = 0;
+    private lineCounter: number = 0;
+    private lineCountData: number = 0;
+    private timerIndex: number = 0;
+    private timerOffset: number = 0;
+
+    private nextTimer: {
+        length: number;
+        timer: number;
+    };
+    private nextLinear: {
+        loop: boolean;
+        count: number;
+    };
+
     setLinear(loop: boolean, lineCount: number): ITriangleSound {
+        this.nextLinear = {
+            loop: loop,
+            count: lineCount
+        };
         return this;
     }
     setTimer(lenIndex: number, timerCount: number): ITriangleSound {
+        this.nextTimer = {
+            length: lengthIndexList[lenIndex],
+            timer: timerCount + 1
+        };
+        if (!this.nextLinear) {
+            this.nextLinear = {
+                loop: this.loopFlag,
+                count: this.lineCountData
+            };
+        }
         return this;
     }
-    setTimerCount(count: number): ITriangleSound {
+    setTimerLow(low: number): ITriangleSound {
+        this.nextTimer = {
+            length: this.lengthCounter,
+            timer: (((this.timerCounter - 1) & 0xff00) | low) + 1
+        }
         return this;
     }
     setEnabled(flag: boolean): ITriangleSound {
+        if (!flag) {
+            this.lengthCounter = 0;
+        }
         return this;
     }
     isPlaing(): boolean {
-        return false;
+        return this.lengthCounter > 0 && this.lineCounter > 0;
     }
     public getOutput(l: boolean, e: boolean): Uint8Array {
+        if (this.nextLinear) {
+            this.loopFlag = this.nextLinear.loop;
+            this.lineCounter = this.nextLinear.count;
+            this.lineCountData = this.lineCounter;
+            this.nextLinear = null;
+        }
+        if (this.nextTimer) {
+            if (this.timerCounter) {
+                this.timerOffset = Math.floor(this.timerOffset * this.nextTimer.timer / this.timerCounter);
+            }
+            this.lengthCounter = this.nextTimer.length;
+            this.timerCounter = this.nextTimer.timer;
+            this.nextTimer = null;
+        }
+        if (l) {
+            if (this.loopFlag) {
+                // これはカウントダウンさせない
+                /*
+                if (this.lineCounter > 0) {
+                    this.lineCounter--;
+                }
+                */
+            } else if (this.lengthCounter > 0) {
+                this.lengthCounter--;
+            }
+        }
+        let size = this.timerCounter;
+        for (let i = 0; i < SAMPLE_RATE; i++) {
+            if (this.timerCounter >= 4 && this.lineCounter && this.lengthCounter) {
+                this.output[i] = triangleSampleData[this.timerIndex];
+                this.timerOffset += addClock[i];
+                if (this.timerOffset >= size) {
+                    this.timerIndex = (this.timerIndex + Math.floor(this.timerOffset / size)) % triangleSampleData.length;
+                    this.timerOffset %= size;
+                }
+            } else {
+                this.output[i] = 0;
+            }
+        }
         return this.output;
     }
 }
 
+const noiseTimerIndex: number[] = [
+    4, 8, 0x10, 0x20, 0x40, 0x60, 0x80, 0xa0,
+    0xca, 0xfe, 0x17c, 0x2fa, 0x3f8, 0x7f2, 0xfe4
+];
+
 class NoiseSoundImpl implements INoiseSound {
     private output = new Uint8Array(SAMPLE_RATE);
+    private lengthCounter: number = 0;
+    private timerCounter: number = 0;
+    private volume: number = 0;
+    private shiftRegister: number = 1;
+    private loopFlag: boolean = false;
+    private timerOffset: number = 0;
+    private shortMode: boolean = false;
+    private envelopeData: {
+        period: number;
+        count: number;
+    };
+
+    private nextVolume: {
+        stop: boolean;
+        volume: number;
+    };
+    private nextEnvelope: {
+        loop: boolean;
+        period: number;
+    };
+    private nextTimer: {
+        mode: number;
+        timer: number;
+    };
+    private nextLength: number;
 
     setVolume(stopFlag: boolean, volume: number): INoiseSound {
+        this.nextVolume = {
+            stop: stopFlag,
+            volume: volume
+        };
+        this.nextEnvelope = null;
         return this;
     }
     setEnvelope(loopFlag: boolean, period: number): INoiseSound {
+        this.nextEnvelope = {
+            loop: loopFlag,
+            period: period + 1
+        };
+        this.nextVolume = null;
         return this;
     }
     setRandomMode(shortFlag: number, timerIndex: number): INoiseSound {
+        this.nextTimer = {
+            mode: shortFlag,
+            timer: noiseTimeIndex[timerIndex]
+        }
         return this;
     }
     setLength(lengthIndex: number): INoiseSound {
+        this.nextLength = lengthIndexList[lengthIndex];
+        if (!this.nextEnvelope && !this.nextVolume && this.envelopeData) {
+            this.nextEnvelope = {
+                loop: this.loopFlag,
+                period: this.envelopeData.period
+            };
+        }
         return this;
     }
-    setEnabled(flag: number): INoiseSound {
+    setEnabled(flag: boolean): INoiseSound {
+        if (!flag) {
+            this.lengthCounter = 0;
+        }
         return this;
     }
     isPlaing(): boolean {
-        return false;
+        return this.lengthCounter > 0;
     }
 
     public getOutput(l: boolean, e: boolean): Uint8Array {
+        if (this.nextVolume) {
+            this.loopFlag = this.nextVolume.stop;
+            this.volume = this.nextVolume.volume;
+            this.nextVolume = null;
+            this.envelopeData = null;
+        } else if (this.nextEnvelope) {
+            this.loopFlag = this.nextEnvelope.loop;
+            this.volume = 15;
+            this.envelopeData = {
+                period: this.nextEnvelope.period,
+                count: this.nextEnvelope.period
+            };
+            this.nextEnvelope = null;
+        }
+        if (this.nextTimer) {
+            if (this.timerCounter) {
+                this.timerOffset = Math.floor(this.timerOffset * this.timerCounter / this.nextTimer.timer);
+            }
+            this.timerCounter = this.nextTimer.timer;
+            this.shortMode = this.nextTimer.mode > 0;
+            this.nextTimer = null;
+        }
+        if (this.nextLength) {
+            this.lengthCounter = this.nextLength;
+            this.nextLength = undefined;
+        }
+        if (l) {
+            if (!this.loopFlag) {
+                if (this.lengthCounter > 0) {
+                    this.lengthCounter--;
+                }
+            }
+        }
+        if (e) {
+            if (this.envelopeData) {
+                this.envelopeData.count--;
+                if (this.envelopeData.count == 0) {
+                    if (this.volume > 0) {
+                        this.volume--;
+                    } else if (this.loopFlag) {
+                        this.volume = 15;
+                    }
+                    this.envelopeData.count = this.envelopeData.period;
+                }
+            }
+        }
+        let size = this.timerCounter;
+        for (let i = 0; i < SAMPLE_RATE; i++) {
+            if (this.timerCounter >= 4 && this.lengthCounter) {
+                if (this.shiftRegister & 1) {
+                    this.output[i] = 0;
+                } else {
+                    this.output[i] = this.volume;
+                }
+                this.timerOffset += addClock[i];
+                while (this.timerOffset >= size) {
+                    let flag: number;
+                    if (this.shortMode) {
+                        flag = ((this.shiftRegister << 14) ^ (this.shiftRegister << 8)) & 0x4000;
+                    } else {
+                        flag = ((this.shiftRegister << 13) ^ (this.shiftRegister << 14)) & 0x4000;
+                    }
+                    this.shiftRegister = flag | (this.shiftRegister >> 1);
+                    this.timerOffset -= size;
+                }
+            } else {
+                this.output[i] = 0;
+            }
+        }
         return this.output;
     }
 
@@ -887,6 +1150,7 @@ class FamAPUImpl implements IFamAPU {
     noise: NoiseSoundImpl;
     delta: DeltaSoundImpl;
     square: [SquareSoundImpl, SquareSoundImpl];
+    private irqCallback: (apu: IFamAPU) => void
 
     private stepMode: number;
     private seqNumber: number;
@@ -904,16 +1168,22 @@ class FamAPUImpl implements IFamAPU {
         this.seqNumber = 0;
     }
 
-    setMode(mode: number): IFamAPU {
+    setMode(mode: number, irq?: (apu: IFamAPU) => void): IFamAPU {
         this.stepMode = mode;
         this.seqNumber = 0;
+        if (mode == 0 && irq) {
+            this.irqCallback = irq;
+        } else {
+            this.irqCallback = null;
+        }
         return this;
     }
 
-    public stepFrame(data: Uint8Array, index: number): void {
+    public stepFrame(data: Uint8Array, index: number): number {
         // 約1.789MHzを7457分周することで240Hzのクロックレート
         let e = true;
         let l = false;
+        let ret = this.seqNumber;
         if (this.stepMode) {
             // 5 step
             if (this.seqNumber == 1 || this.seqNumber == 4) {
@@ -938,5 +1208,10 @@ class FamAPUImpl implements IFamAPU {
         for (let i = 0; i < SAMPLE_RATE; i++) {
             data[offset + i] = Math.min(255, (pulse_table[pl1[i] + pl2[i]] + tnd_table[3 * tri[i] + 2 * noi[i] + dmc[i]]) * 255);
         }
+        if (ret == 3 && this.irqCallback && !this.stepMode) {
+            this.irqCallback(this);
+        }
+        //console.log("frame");
+        return ret;
     }
 }
