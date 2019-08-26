@@ -1,6 +1,7 @@
 import { FamRequestMsg } from "./fam-msg";
-import { FamWorkerImpl } from "./fam-impl";
+import { FamWorkerImpl, FamStorageBase } from "./fam-impl";
 import { FamUtil } from './fam-util';
+import { IFamStorage } from "./fam-api";
 
 var famWorker: FamWorkerImpl;
 
@@ -18,6 +19,11 @@ self["__extends"] = /*(undefined && undefined.__extends) || */(function () {
     };
 })();
 
+var storageData: {
+    key: string;
+    resolve: (res: IFamStorage) => void;
+};
+
 addEventListener("message", $event => {
     let req: FamRequestMsg = $event.data;
     if (req) {
@@ -33,8 +39,24 @@ addEventListener("message", $event => {
             self["FamUtil"] = new FamUtil();
             let rom = eval("(" + req.option + ")(FamUtil)");
             console.log(rom);
-            famWorker = new FamWorkerImpl(rom);
+            // TODO
+            famWorker = new FamWorkerImpl(rom, (key, size) => {
+                return new Promise((resolve, reject) => {
+                    storageData = {
+                        key: key,
+                        resolve: resolve
+                    };
+                    postMessage({
+                        type: "load",
+                        key: key,
+                        size: size
+                    });
+                });
+            });
         } else if (req.type == "shutdown") {
+            if (famWorker) {
+                famWorker.shutdown();
+            }
             self.close();
         } else if (req.type == "frame" || req.type == "skip-frame") {
             if (famWorker) {
@@ -54,6 +76,23 @@ addEventListener("message", $event => {
         } else if (req.type == "param") {
             if (famWorker) {
                 famWorker.execute(req);
+            }
+        } else if (req.type == "storage") {
+            // 更新
+            if (storageData) {
+                storageData.resolve(new class extends FamStorageBase {
+                    constructor() {
+                        super(req.option);
+                    }
+                    flushData(data: Uint8Array): void {
+                        //let dt = new Uint8Array(data);
+                        postMessage({
+                            type: "save",
+                            key: storageData.key,
+                            data: data
+                        });
+                    }
+                });
             }
         }
     }

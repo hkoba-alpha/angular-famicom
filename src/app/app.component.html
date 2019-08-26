@@ -1,5 +1,6 @@
 <!--The content below is only a placeholder and can be replaced.-->
 <fam-canvas [machine]="famMachine" ppuStyle="border: 1px solid black"></fam-canvas>
 
+<input #nesFile type="file" (change)="onFileChange(nesFile.files)">
 <button (click)="onStart()">START</button>
 <button (click)="onStop()">STOP</button>

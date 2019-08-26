@@ -151,12 +151,32 @@ export interface FamData {
 }
 
 /**
+ * 永続的データ管理
+ */
+export interface IFamStorage {
+    size(): number;
+
+    write(addr: number, val: number): void;
+    write(addr: number, val: number[]): void;
+    write(addr: number, val: Uint8Array): void;
+
+    read(addr: number): number;
+    read(addr: number, size: number): Uint8Array;
+}
+
+/**
+ * 永続的データをサポートするかをチェックする
+ */
+export type FamStorageCheck = (key: string, size: number) => Promise<IFamStorage>;
+
+/**
  * 実装
  */
 export interface IFamROM {
     hBlank?(data: FamData, line: number): void;
     vBlank?(data: FamData): void;
     init?(data: FamData, type: "power" | "reset", param?: any): void;
+    checkStorage?(check: FamStorageCheck): void;
 }
 
 /**

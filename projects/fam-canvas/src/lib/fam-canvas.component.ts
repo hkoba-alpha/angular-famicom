@@ -33,6 +33,12 @@ export class FamCanvasComponent implements OnInit {
     if (!mac) {
       return;
     }
+    if (this.famMachine) {
+      if (this.famMachine == mac) {
+        return;
+      }
+      this.famMachine.shutdown();
+    }
     this.famMachine = mac;
     mac.event.subscribe((res: FamResponseMsg) => {
       if (res.screen) {

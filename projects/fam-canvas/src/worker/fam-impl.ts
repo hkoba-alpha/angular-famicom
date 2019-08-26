@@ -1,4 +1,4 @@
-import { IFamROM, IFamPPU, PPUConfig2000, PPUConfig2001, PPUState, ISquareSound, ITriangleSound, INoiseSound, IDeltaSound, IFamAPU } from "./fam-api";
+import { IFamROM, IFamPPU, PPUConfig2000, PPUConfig2001, PPUState, ISquareSound, ITriangleSound, INoiseSound, IDeltaSound, IFamAPU, IFamStorage, FamStorageCheck } from "./fam-api";
 import { FamRequestMsg, FamResponseMsg } from "./fam-msg";
 
 const famPaletteRGB = [0x75, 0x75, 0x75,
@@ -137,7 +137,7 @@ class FamPPUImpl implements IFamPPU {
     }
     setMirrorMode(mode: "vertical" | "horizontal" | "four"): void {
         this.mode = mode;
-        this.reset();
+        //this.reset();
     }
 
     public reset(): void {
@@ -275,7 +275,7 @@ class FamPPUImpl implements IFamPPU {
     }
     readState(): PPUState {
         let res = Object.assign({}, this.state);
-        this.state.vblank = false;
+        //this.state.vblank = false;
         return res;
     }
 
@@ -312,7 +312,6 @@ class FamPPUImpl implements IFamPPU {
             //console.log("[" + ix + "]=rgb(" + r + "," + g + "," + b + ")");
             this.rgbColor[ix] = 0xff000000 | (b << 16) | (g << 8) | r;
         }
-        console.log(this.rgbColor);
     }
 
     public scanLine(buf: Uint32Array, line: number): void {
@@ -449,6 +448,8 @@ class FamPPUImpl implements IFamPPU {
             if (line == 240) {
                 this.state.vblank = true;
                 //this.state.spriteHit = false;
+            } else if (line == 261) {
+                this.state.vblank = false;
             }
         }
     }
@@ -482,16 +483,83 @@ class FamPPUImpl implements IFamPPU {
     }
 }
 
+export abstract class FamStorageBase implements IFamStorage {
+    private updateCount: number = 0;
+
+    constructor(protected buffer: Uint8Array) {
+    }
+
+    size(): number {
+        return this.buffer.length;
+    }
+    write(addr: number, val: number): void;
+    write(addr: number, val: number[]): void;
+    write(addr: number, val: Uint8Array): void;
+    write(addr: any, val: any) {
+        if (typeof val == "number") {
+            if (this.buffer[addr] != val) {
+                this.buffer[addr] = val;
+                this.updateCount++;
+            }
+        } else if (Array.isArray(val) || val instanceof Uint8Array) {
+            this.buffer.set(val, addr);
+            this.updateCount++;
+        }
+    }
+
+    read(addr: number): number;
+    read(addr: number, size: number): Uint8Array;
+    read(addr: any, size?: any) {
+        if (size !== undefined && !isNaN(size)) {
+            // 複数
+            let ret = new Uint8Array(size);
+            let ix = 0;
+            ret.set(this.buffer.slice(addr, addr + size));
+            return ret;
+        }
+        return this.buffer[addr];
+    }
+
+    public getUpdateCount(): number {
+        return this.updateCount;
+    }
+
+    public flush(): void {
+        this.flushData(this.buffer);
+        this.updateCount = 0;
+    }
+
+    /**
+     * 変更データを反映させる
+     */
+    abstract flushData(data: Uint8Array): void;
+}
+/**
+ * 処理本体実装クラス
+ */
 export class FamWorkerImpl {
     private famPpu: FamPPUImpl;
     private famApu: FamAPUImpl;
     private initType: "power" | "reset" = "power";
     private initParam: any;
     private button: number[] = [0, 0];
+    private famStorage: FamStorageBase;
 
-    constructor(private famRom: IFamROM) {
+    constructor(private famRom: IFamROM, private storageCheck: FamStorageCheck) {
         this.famPpu = new FamPPUImpl();
         this.famApu = new FamAPUImpl();
+        if (this.famRom.checkStorage) {
+            this.famRom.checkStorage((key, size) => {
+                return new Promise((resolve, reject) => {
+                    this.storageCheck(key, size).then(res => {
+                        if (res instanceof FamStorageBase) {
+                            this.famStorage = res;
+                        }
+                        resolve(res);
+                    }, err => reject(err));
+                });
+            });
+        }
     }
 
     public reset(): void {
@@ -503,6 +571,8 @@ export class FamWorkerImpl {
     public execute(req: FamRequestMsg): FamResponseMsg {
         if (req.type == "param") {
             this.initParam = req.option;
+            return null;
+        } else if (req.type == "shutdown") {
             return null;
         }
         let buf: Uint32Array;
@@ -552,10 +622,42 @@ export class FamWorkerImpl {
                     break;
             }
         }
+        this.syncStorage(false);
         return {
             screen: buf,
             sound: apuBuf
         };
+    }
+
+    public shutdown(): void {
+        this.syncStorage(true);
+    }
+
+    // ストレージの更新チェック
+    private storageState = {
+        lastCount: 0,
+        contCount: 0,
+        skipCount: 0
+    };
+
+    private syncStorage(force: boolean): void {
+        if (this.famStorage && this.famStorage.getUpdateCount() > 0) {
+            let cnt = this.famStorage.getUpdateCount();
+            if (cnt > this.storageState.lastCount) {
+                this.storageState.lastCount = cnt;
+                this.storageState.skipCount = 0;
+            } else {
+                this.storageState.skipCount++;
+            }
+            this.storageState.contCount++;
+            if (force || this.storageState.skipCount > 60 || this.storageState.contCount > 600) {
+                // 強制か１秒以上更新がないか１０秒以上更新し続けていたらフラッシュする
+                this.famStorage.flush();
+                this.storageState.lastCount = 0;
+                this.storageState.contCount = 0;
+                this.storageState.skipCount = 0;
+            }
+        }
     }
 }
 

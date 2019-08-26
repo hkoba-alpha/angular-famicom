@@ -1,8 +1,11 @@
 import { Injectable, EventEmitter } from '@angular/core';
 import { FamResponseMsg, FamRequestMsg, FamButton } from '../worker/fam-msg';
 import { IFamROM, FamFunction } from '../worker/fam-api';
-import { FamWorkerImpl } from '../worker/fam-impl';
+import { FamWorkerImpl, FamStorageBase } from '../worker/fam-impl';
 import FamUtil from '../worker/fam-util';
+import { Observable, of } from 'rxjs';
+
+var indexedDB: IDBFactory = window["indexedDB"] || window["mozIndexedDB"] || window["webkitIndexedDB"] || window["msIndexedDB"];
 
 export const famKeyConfig: { [key: string]: { pad: number, button: number } } = {
   "ArrowUp": {
@@ -148,6 +151,7 @@ export abstract class FamMachine {
   public press(ix: number, btn: number): void {
     this.button[ix] |= btn;
   }
+
   public release(ix: number, btn: number): void {
     this.button[ix] &= ~btn;
   }
@@ -209,6 +213,81 @@ export abstract class FamMachine {
       }
     }
   }
+
+  protected loadStorage(key: string, size: number): Promise<Uint8Array> {
+    return new Promise((resolve, reject) => {
+      // TODO
+      this.getStorage().subscribe(db => {
+        let tx = db.transaction("backup", "readonly");
+        let req = tx.objectStore("backup").get(key);
+        req.onsuccess = (ev) => {
+          let res = ev.target["result"];
+          let data = new Uint8Array(size);
+          if (res) {
+            data.set(res.data);
+          }
+          resolve(data);
+        };
+        req.onerror = err => {
+          console.log(err);
+          console.log("Error");
+          resolve(new Uint8Array(size));
+        };
+      }, err => {
+        console.log(err);
+        console.log("Error");
+        resolve(new Uint8Array(size));
+      });
+    });
+  }
+
+  protected saveStorage(key: string, data: Uint8Array): void {
+    this.getStorage().subscribe(db => {
+      this.getStorage().subscribe(db => {
+        let tx = db.transaction("backup", "readwrite");
+        let req = tx.objectStore("backup").put({
+          key: key,
+          data: data
+        });
+        req.onsuccess = (ev) => {
+          console.log(ev);
+        };
+        req.onerror = err => {
+          console.log(err);
+          console.log("Save Error");
+        };
+      }, err => {
+        console.log(err);
+        console.log("Save Error");
+      });
+    }, err => {
+      console.log(err);
+      console.log("Save Error");
+    });
+  }
+
+  private backupDB: IDBDatabase;
+
+  private getStorage(): Observable<IDBDatabase> {
+    if (this.backupDB) {
+      return of(this.backupDB);
+    }
+    return Observable.create(observer => {
+      let request = indexedDB.open("fam-canvas", 1);
+      request.onupgradeneeded = (ev) => {
+        let db = ev.target["result"];
+        db.createObjectStore("backup", { keyPath: 'key' });
+      };
+      request.onsuccess = (ev) => {
+        this.backupDB = ev.target["result"];
+        observer.next(this.backupDB);
+        observer.complete();
+      };
+      request.onerror = (ev) => {
+        observer.reject(ev);
+      };
+    });
+  }
 }
 
 class WebMachine extends FamMachine {
@@ -221,7 +300,22 @@ class WebMachine extends FamMachine {
     } else if (typeof rom == "object") {
       famRom = rom;
     }
-    this.worker = new FamWorkerImpl(famRom);
+    this.worker = new FamWorkerImpl(famRom, (key, size) => {
+      return new Promise((resolve, reject) => {
+        this.loadStorage(key, size).then(res => {
+          let machine = this;
+          let storage = new class extends FamStorageBase {
+            constructor() {
+              super(res);
+            }
+            flushData(data: Uint8Array): void {
+              machine.saveStorage(key, data);
+            }
+          };
+          resolve(storage);
+        }, err => reject(err));
+      });
+    });
   }
 
   protected request(req: FamRequestMsg): void {
@@ -239,6 +333,24 @@ class WorkerMachine extends FamMachine {
     super();
     this.worker = new Worker("assets/famicom.js");
     this.worker.onmessage = (res) => {
+      if (res.data.key) {
+        // ストレージへ保存
+        if (res.data.type == "load") {
+          // load
+          this.loadStorage(res.data.key, res.data.size).then(res => {
+            this.request({
+              type: "storage",
+              button: [],
+              option: res
+            });
+          }, err => {
+          });
+        } else if (res.data.type == "save") {
+          // save
+          this.saveStorage(res.data.key, res.data.data);
+        }
+        return;
+      }
       super.response(res.data);
     };
     if (typeof rom == "function") {
@@ -251,7 +363,14 @@ class WorkerMachine extends FamMachine {
   }
 
   protected request(req: FamRequestMsg): void {
-    this.worker.postMessage(req);
+    let opt: any[] = undefined;
+    if (req.option) {
+      // 特別
+      if (req.option instanceof Uint8Array) {
+        opt = [req.option.buffer];
+      }
+    }
+    this.worker.postMessage(req, opt);
   }
 }
 

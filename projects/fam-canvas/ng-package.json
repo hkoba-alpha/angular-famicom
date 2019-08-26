@@ -3,5 +3,7 @@
   "dest": "../../dist/fam-canvas",
   "lib": {
     "entryFile": "src/public_api.ts"
-  }
+  },
+  "whitelistedNonPeerDependencies": ["md5"]
+
 }

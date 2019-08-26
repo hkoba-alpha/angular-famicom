@@ -1,8 +1,5 @@
 import { Component, NgModuleFactoryLoader, OnInit } from '@angular/core';
-import { Myrom } from './fam-rom/myrom';
 import { FamCanvasService, FamMachine } from 'projects/fam-canvas/src/public_api';
-import { IFamROM, FamData } from 'projects/fam-canvas/src/worker/fam-api';
-import FamUtil from 'projects/fam-canvas/src/worker/fam-util';
 import { NesEmuRom } from 'projects/fam-canvas/src/lib/rom/nes-emu-rom';
 
 let myCode = function () {
@@ -80,9 +77,25 @@ export class AppComponent implements OnInit {
     }, true);
     this.famMachine.setInitParam({ msg: "test param", data: [1,2,3]});
     */
-    this.famMachine = this.famService.createMachine(NesEmuRom, true);
+    this.famMachine = this.famService.createMachine(NesEmuRom, false);
     //this.famMachine.setInitParam("/assets/smario.nes");
-    this.famMachine.setInitParam("/assets/dq1.nes");
+    //this.famMachine.setInitParam("/assets/dq1.nes");
+
+    let req = new XMLHttpRequest();
+    req.open('GET', "/assets/dq1.nes", true);
+    req.responseType = "arraybuffer";
+    req.onreadystatechange = () => {
+      if (req.readyState == 4) {
+        // Complete
+        if (req.status == 200) {
+          this.famMachine.setInitParam(new Uint8Array(req.response));
+        } else {
+          // TODO
+        }
+      }
+    };
+    req.send(null);
+
   }
 
   onStart(): void {
@@ -94,5 +107,18 @@ export class AppComponent implements OnInit {
     if (this.famMachine) {
       this.famMachine.stop();
     }
+  }
+
+  onFileChange(list: FileList): void {
+    if (list.length) {
+      let reader = new FileReader();
+      reader.onload = ev => {
+        let data = new Uint8Array(reader.result as any);
+        this.famMachine = this.famService.createMachine(NesEmuRom, false);
+        this.famMachine.setInitParam(data);
+      };
+      reader.readAsArrayBuffer(list[0]);
+    }
+    console.log(list);
   }
 }

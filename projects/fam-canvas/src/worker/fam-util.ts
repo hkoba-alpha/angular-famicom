@@ -1,4 +1,5 @@
-import { FamData, IFamPPU } from "./fam-api";
+import { FamData, IFamPPU, IFamStorage } from "./fam-api";
+import * as md5 from 'md5';
 
 const PRG_SIZE = 0x4000;
 const CHR_SIZE = 0x2000;
@@ -20,12 +21,14 @@ export class NesRomData {
     private chrBankNum: number;
     private setupFlag: number;
     public readonly mapperType: number;
+    public readonly md5hash: string;
 
     constructor(private romData: Uint8Array) {
         if (romData[0] != 0x4e || romData[1] != 0x45 || romData[2] != 0x53 || romData[3] != 0x1a) {
             // NES<EOF>ではない
             throw "ヘッダエラー";
         }
+        this.md5hash = md5(this.romData);
         this.prgBankNum = romData[4];
         this.chrBankNum = romData[5];
         this.setupFlag = romData[6] & 0xf;
@@ -108,6 +111,21 @@ class WramMemory implements IFamMemory {
     }
     read(addr: number): number {
         return this.memory[addr];
+    }
+}
+
+/**
+ * バッテリーバックアップ
+ */
+class BackupMemory implements IFamMemory {
+    constructor(private famStorage: IFamStorage) {
+    }
+
+    write(addr: number, val: number): void {
+        this.famStorage.write(addr, val);
+    }
+    read(addr: number): number {
+        return this.famStorage.read(addr);
     }
 }
 
@@ -605,7 +623,7 @@ class CpuState {
     regY: number = 0;
     regPc: number = 0;
     regSp: number = 0xff;
-    regFr: number = FR_ON | FR_I;
+    regFr: number = FR_ON | FR_I | FR_B;
     private interruptType: "" | "irq" | "reset" | "nmi" | "brk" = "";
 
     constructor(public readonly memory: FamMemory) {
@@ -613,7 +631,10 @@ class CpuState {
     }
 
     public setInterrupt(type: "" | "irq" | "reset" | "nmi" | "brk"): void {
-        this.interruptType = type;
+        if (!this.interruptType || !type) {
+            // クリアするか、まだ未設定なら反映する
+            this.interruptType = type;
+        }
     }
     public get interrupted(): "" | "irq" | "reset" | "nmi" | "brk" {
         return this.interruptType;
@@ -1116,9 +1137,9 @@ class CpuInstruction {
     }
     public brk(): CpuInstruction {
         this.proc.push(data => {
-            if (!(data.state.regFr & FR_I)) {
-                data.state.setInterrupt("brk");
-            }
+            //if (!(data.state.regFr & FR_I)) {
+            data.state.setInterrupt("brk");
+            //}
             data.nextPc++;
             return data;
         });
@@ -1169,10 +1190,13 @@ class CpuInstruction {
         this.proc.push(addr, data => data.store(data.state["reg" + reg]));
         return this;
     }
-    public transfer(from: "A" | "X" | "Y" | "Fr", to: "A" | "X" | "Y" | "Fr"): CpuInstruction {
-        if (to == "Fr") {
+    public transfer(from: "A" | "X" | "Y" | "Sp", to: "A" | "X" | "Y" | "Sp"): CpuInstruction {
+        if (to == "Sp") {
             // 特殊
-            this.proc.push(data => data.setFlag(data.state["reg" + from]));
+            this.proc.push(data => {
+                data.state["reg" + to] = data.state["reg" + from];
+                return data;
+            });
         } else {
             this.proc.push(data => data.nz(data.state["reg" + from]).setReg(to));
         }
@@ -1475,9 +1499,9 @@ export class FamCpu {
         // TYA
         this.entry(0x98, 2).name("TYA").transfer("Y", "A");
         // TXS
-        this.entry(0x9a, 2).name("TXS").transfer("X", "Fr");
+        this.entry(0x9a, 2).name("TXS").transfer("X", "Sp");
         // TSX
-        this.entry(0xba, 2).name("TSX").transfer("Fr", "X");
+        this.entry(0xba, 2).name("TSX").transfer("Sp", "X");
 
         // PHA
         this.entry(0x48, 3).name("PHA").pha();
@@ -1494,6 +1518,8 @@ export class FamCpu {
 
     private debugCode: string[] = [];
     private errorFlag = false;
+    // Iフラグを少し遅れて指定する
+    private interruptedFlag: boolean = true;
 
     public execute(line: number): void {
         //const scanClock = 114;
@@ -1507,7 +1533,7 @@ export class FamCpu {
             }
         }
         while (this.cycle < scanClock) {
-            if (this.memory.isFrameIrq && !(this.cpuState.regFr & FR_I)) {
+            if (this.memory.isFrameIrq && !this.interruptedFlag) {
                 // IRQが発行できるようになるまでクリアしてはいけない
                 this.cpuState.setInterrupt("irq");
                 this.memory.clearFrameIrq();
@@ -1517,6 +1543,8 @@ export class FamCpu {
                 this.cycle += this.interrupt(type);
                 continue;
             }
+            // CLI,SEI命令直後は反映させず、１つ遅れて行う
+            this.interruptedFlag = (this.cpuState.regFr & FR_I) > 0;
             let code = this.memory.read(this.cpuState.regPc);
             /*
             if (!this.errorFlag && this.cpuState.regPc < 0x8000) {
@@ -1549,7 +1577,7 @@ export class FamCpu {
                     this.cycle += ope.execute();
                 }
             } else {
-                console.log("No Code:" + Number(code).toString(16));
+                console.log("No Code(" + Number(this.cpuState.regPc).toString(16) + "):" + Number(code).toString(16));
                 console.log(this.debugCode);
                 this.cpuState.regPc = (this.cpuState.regPc + 1) & 0xffff;
                 this.cycle += 20;
@@ -1589,6 +1617,7 @@ export class FamCpu {
         this.push(this.cpuState.regFr);
         this.cpuState.regPc = nextPc;
         this.cpuState.regFr |= FR_I;
+        this.interruptedFlag = true;
         this.cpuState.setInterrupt("");
         return 6;
     }
@@ -1601,9 +1630,13 @@ export class FamUtil {
     public getMemory(data: FamData, manager?: IPrgMemoryManager): FamMemory {
         return new FamMemory(data, manager);
     }
+    public getBackupMemory(mem: IFamStorage): BackupMemory {
+        return new BackupMemory(mem);
+    }
     public readonly NesRomManager = NesRomManager;
 
     public readonly FamCpu = FamCpu;
+    public readonly NesRomData = NesRomData;
 }
 
 export default FamUtil;
