@@ -134,40 +134,13 @@ class BackupMemory implements IFamMemory {
  */
 class PpuMemory implements IFamMemory {
     private nmiFlag: boolean;
-    private ppuAddr: number;
-    private ppuNextAddr: number;
-    private ppuInc: number = 1;
-    private spriteAddr: number;
-    private scrollIx: number;
-    private scrollPos: number[];
-    private ppuReadData: number;
-
-    private reg: {
-        v: number;
-        t: number;
-        x: number;
-        w: number;
-    };
 
     constructor(private famPpu: IFamPPU, private parent: IFamMemory) {
         this.reset();
     }
 
     reset() {
-        this.famPpu.reset();
         this.nmiFlag = false;
-        this.ppuAddr = 0;
-        this.ppuInc = 1;
-        this.spriteAddr = 0;
-        this.scrollIx = 0;
-        this.scrollPos = [0, 0];
-        this.ppuReadData = 0;
-        this.reg = {
-            v: 0,
-            t: 0,
-            x: 0,
-            w: 0
-        };
     }
 
     get isNmiEnabled(): boolean {
@@ -175,122 +148,13 @@ class PpuMemory implements IFamMemory {
     }
 
     write(addr: number, val: number): void {
-        switch (addr & 7) {
-            case 0: // 2000
-                //console.log("VRAM 2000:" + Number(val).toString(16));
-                this.nmiFlag = (val & 0x80) > 0;
-                this.famPpu.setConfig2000({
-                    spriteSize: (val & 0x20) > 0 ? 1 : 0,
-                    bgPattern: (val & 0x10) > 0 ? 1 : 0,
-                    spritePattern: (val & 0x08) > 0 ? 1 : 0,
-                    nameTable: val & 3
-                });
-                if (val & 0x4) {
-                    this.ppuInc = 32;
-                } else {
-                    this.ppuInc = 1;
-                }
-                this.reg.t = (this.reg.t & 0x73ff) | ((val & 3) << 10);
-                break;
-            case 1: // 2001
-                this.famPpu.setConfig2001({
-                    bgColor: (val & 0xe0) >> 5,
-                    sprite: (val & 0x10) > 0,
-                    bg: (val & 0x8) > 0,
-                    spriteMask: (val & 0x4) > 0 ? 1 : 0,
-                    bgMask: (val & 0x2) > 0 ? 1 : 0
-                });
-                break;
-            case 3: // 2003
-                this.spriteAddr = val;
-                break;
-            case 4: // 2004
-                this.famPpu.writeSprite(this.spriteAddr, val);
-                this.spriteAddr = (this.spriteAddr + 1) & 0xff;
-                break;
-            case 5: // 2005
-                this.scrollPos[this.scrollIx] = val;
-                if (this.scrollIx) {
-                    this.famPpu.setScroll(this.scrollPos[0], this.scrollPos[1]);
-                }
-                this.scrollIx ^= 1;
-                if (this.reg.w) {
-                    // second
-                    this.reg.t = (this.reg.t & 0xc1f) | ((val & 7) << 12) | ((val & 0xf8) << 2);
-                } else {
-                    // first
-                    this.reg.t = (this.reg.t & 0x7fe0) | (val >> 3);
-                    this.reg.x = val & 7;
-                }
-                this.reg.w = this.reg.w ^ 1;
-                break;
-            case 6: // 2006
-                if (this.scrollIx) {
-                    // 下位
-                    this.ppuNextAddr = (this.ppuNextAddr & 0xff00) | val;
-                    this.ppuAddr = this.ppuNextAddr;
-                    // nameTableも変更
-                    this.famPpu.setConfig2000({
-                        nameTable: (val & 0xc) >> 2
-                    });
-                } else {
-                    // 上位
-                    this.ppuNextAddr = (this.ppuNextAddr & 0xff) | (val << 8);
-                    if (val >= 0x40) {
-                        console.log("PPU OVER");
-                    }
-                }
-                if (this.reg.w) {
-                    // second
-                    this.reg.t = (this.reg.t & 0x7f00) | val;
-                    this.reg.v = this.reg.t;
-                } else {
-                    // first
-                    this.reg.t = (this.reg.t & 0xff) | ((val & 0x3f) << 8);
-                }
-                this.reg.w = this.reg.w ^ 1;
-                this.scrollIx ^= 1;
-                break;
-            case 7: // 2007
-                //console.log("WritePPU:" + Number(this.ppuAddr).toString(16) + " <= " + Number(val).toString(16));
-                if (this.ppuAddr < 0x3f00 || (this.ppuAddr & 3)) {
-                    this.famPpu.write(this.ppuAddr, val);
-                } else {
-                    // Palette
-                    this.famPpu.write(this.ppuAddr & ~0x10, val);
-                }
-                /*
-                if (this.ppuAddr < 0x2000 || this.ppuAddr >= 0x4000) {
-                    console.log("PPU[" + Number(this.ppuAddr).toString(16) + "]=" + val);
-                    debugLogFlag = true;
-                } else if (this.ppuAddr > 0x2000 && this.ppuAddr < 0x23c0 && debugLogFlag) {
-                    console.log("PPU[" + Number(this.ppuAddr).toString(16) + "]=" + val);
-                }
-                */
-                this.ppuAddr += this.ppuInc;
-                this.reg.v += this.ppuInc;
-                break;
-            default:
-                break;
+        if ((addr & 7) == 0) {
+            this.nmiFlag = (val & 0x80) > 0;
         }
+        this.famPpu.writePPU(addr, val);
     }
     read(addr: number): number {
-        switch (addr & 7) {
-            case 2: // 2002
-                let st = this.famPpu.readState();
-                // リセット
-                this.scrollIx = 0;
-                this.reg.w = 0;
-                return (st.scanSprite << 5) | (st.spriteHit ? 0x40 : 0) | (st.vblank ? 0x80 : 0);
-            case 7: // 2007
-                // PPUは１つ遅れて読み込まれる
-                let ret = this.ppuReadData;
-                this.ppuReadData = this.famPpu.read(this.ppuAddr);
-                this.ppuAddr += this.ppuInc;
-                this.reg.v += this.ppuInc;
-                return ret;
-        }
-        return 0;
+        return this.famPpu.readPPU(addr);
     }
 
     /**
@@ -312,6 +176,11 @@ class ApuIoMemory implements IFamMemory {
     private triangleRow: number = 0;
     private irqEnableFlag: boolean = false;
     private frameIrqFlag: boolean = false;
+    private dmc = {
+        irq: false,
+        irqEnable: false,
+        addr: 0xc000
+    };
 
     constructor(private famData: FamData, private parent: FamMemory) {
         this.write(0x17, 0);
@@ -342,7 +211,7 @@ class ApuIoMemory implements IFamMemory {
             // Square
             let ix = addr >> 2;
             let sq = this.famData.apu.square[ix];
-            if (ix == 1) {
+            if (ix == 0) {
                 //console.log("400" + addr + "=" + val);
             }
             switch (addr & 3) {
@@ -399,12 +268,40 @@ class ApuIoMemory implements IFamMemory {
                     this.famData.apu.noise.setLength(val >> 3);
                     break;
             }
+        } else if (addr < 20) {
+            // DMC
+            switch (addr) {
+                case 16:
+                    this.dmc.irqEnable = (val & 0x80) > 0;
+                    if (!this.dmc.irqEnable) {
+                        this.dmc.irq = false;
+                    }
+                    this.famData.apu.delta.setPeriod((val & 0x40) > 0, val & 15);
+                    break;
+                case 17:
+                    this.famData.apu.delta.setDelta(val & 127);
+                    break;
+                case 18:
+                    this.dmc.addr = val * 0x40 + 0xc000;
+                    break;
+                case 19:
+                    this.famData.apu.delta.setSample((ix, last) => {
+                        // TODO cpu cycle + 4
+                        if (last && this.dmc.irqEnable) {
+                            this.dmc.irq = true;
+                        }
+                        //console.log("DMC read");
+                        return this.parent.read(((this.dmc.addr + ix) & 0x7fff) | 0x8000);
+                    }, val);
+                    break;
+            }
         } else if (addr == 0x15) {
             // APU Control
             this.famData.apu.square[0].setEnabled((val & 1) > 0);
             this.famData.apu.square[1].setEnabled((val & 2) > 0);
             this.famData.apu.triangle.setEnabled((val & 4) > 0);
             this.famData.apu.noise.setEnabled((val & 8) > 0);
+            this.famData.apu.delta.setEnabled((val & 16) > 0);
         } else if (addr == 0x17) {
             // mi------
             this.irqEnableFlag = (val & 0xc0) == 0;
@@ -448,6 +345,9 @@ class ApuIoMemory implements IFamMemory {
             }
             if (this.irqEnableFlag) {
                 ret |= 0x40;
+            }
+            if (this.dmc.irq) {
+                ret |= 0x80;
             }
             return ret;
         }
@@ -579,6 +479,14 @@ export class FamMemory extends MemManager {
             this.manager.init(this);
         }
         this.ioMem = new ApuIoMemory(famData, this);
+        this.setMemory(this.ioMem, 0x4000, 0x4020);
+    }
+    public reset(): void {
+        if (this.manager) {
+            this.manager.init(this);
+        }
+        this.ppuMem.reset();
+        this.ioMem = new ApuIoMemory(this.famData, this);
         this.setMemory(this.ioMem, 0x4000, 0x4020);
     }
     public get isNmiEnabled(): boolean {
@@ -1521,10 +1429,20 @@ export class FamCpu {
     // Iフラグを少し遅れて指定する
     private interruptedFlag: boolean = true;
 
-    public execute(line: number): void {
-        //const scanClock = 114;
-        const scanClock = 114;  // 341PPU / 3:  1PPU=3CPU cycle
-        if (line == 241) {
+    public execute(line: number, blank: boolean): void {
+        // 0-254( 255 / 3 = 85)
+        let scanClock = 85;
+        /*
+        if (!blank) {
+            return;
+        }
+        scanClock = 114;
+        blank = false;
+        */
+        if (blank) {
+            // HBlank 255-340 PPU (86 / 3 = 28.6)
+            scanClock = 28;
+        } else if (line == 241) {
             // VBlank
             if (this.memory.isNmiEnabled) {
                 //this.cpuState.setInterrupt("nmi");

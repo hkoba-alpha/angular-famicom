@@ -53,9 +53,12 @@ export interface IFamPPU {
     setScroll(sx: number, sy: number): void;
     readState(): PPUState;
 
-    setMirrorMode(mode: "vertical" | "horizontal" | "four"): void;
+    setMirrorMode(mode: "vertical" | "horizontal" | "four" | "one0" | "one3"): void;
 
     reset(): void;
+
+    writePPU(addr: number, val: number): void;
+    readPPU(addr: number): number;
 }
 
 /**
@@ -122,7 +125,7 @@ export interface IDeltaSound {
 
     setDelta(delta: number): IDeltaSound;
 
-    setSample(data: number[] | Uint8Array, start: number, length: number): IDeltaSound;
+    setSample(reader: (index: number, last?: boolean) => number, count: number): IDeltaSound;
 
     setEnabled(flag: boolean): IDeltaSound;
 
@@ -173,6 +176,9 @@ export type FamStorageCheck = (key: string, size: number) => Promise<IFamStorage
  * 実装
  */
 export interface IFamROM {
+    // 0-255 ppu cycleのrender
+    preScanLine?(data: FamData, line: number): void;
+    // 256-340 ppu cycleのhblank
     hBlank?(data: FamData, line: number): void;
     vBlank?(data: FamData): void;
     init?(data: FamData, type: "power" | "reset", param?: any): void;

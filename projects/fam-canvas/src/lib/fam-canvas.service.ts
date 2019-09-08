@@ -250,7 +250,6 @@ export abstract class FamMachine {
           data: data
         });
         req.onsuccess = (ev) => {
-          console.log(ev);
         };
         req.onerror = err => {
           console.log(err);

@@ -113,15 +113,14 @@ class FamPPUImpl implements IFamPPU {
     // 2000-23FF(2000-23BF,23C0-23FF), 2400-27FF, 2800-2BFF, 2C00-2FFF
     private nameTable: Uint8Array[];
 
+    private nameTableBuf: Uint8Array[] = [new Uint8Array(0x400), new Uint8Array(0x400), new Uint8Array(0x400), new Uint8Array(0x400)];
+
     // 3F00-3F0F,3F10-3F1F
     private palette: Uint8Array;
 
     private config2000: PPUConfig2000;
     private config2001: PPUConfig2001;
     private state: PPUState;
-
-    private scrollX: number;
-    private scrollY: number;
 
     private spriteBuf: Uint8Array = new Uint8Array(256);
 
@@ -132,15 +131,139 @@ class FamPPUImpl implements IFamPPU {
 
     private nextSpriteHit: boolean;
 
-    constructor(private mode: "vertical" | "horizontal" | "four" = "vertical") {
+    private reg: {
+        v: number;
+        t: number;
+        x: number;
+        w: number;
+        inc: number;
+        spriteAddr: number;
+        lastVal: number;
+        readState: boolean;
+    };
+
+    constructor(private mode: "vertical" | "horizontal" | "four" | "one0" | "one3" = "vertical") {
         this.reset();
     }
-    setMirrorMode(mode: "vertical" | "horizontal" | "four"): void {
-        this.mode = mode;
-        //this.reset();
+    setMirrorMode(mode: "vertical" | "horizontal" | "four" | "one0" | "one3"): void {
+        if (this.mode != mode) {
+            this.mode = mode;
+            //this.reset();
+            this.setMirror();
+        }
     }
 
+    writePPU(addr: number, val: number): void {
+        switch (addr & 7) {
+            case 0: // 2000
+                this.setConfig2000({
+                    spriteSize: (val & 0x20) > 0 ? 1 : 0,
+                    bgPattern: (val & 0x10) > 0 ? 1 : 0,
+                    spritePattern: (val & 0x08) > 0 ? 1 : 0,
+                    nameTable: val & 3
+                });
+                if (val & 0x4) {
+                    this.reg.inc = 32;
+                } else {
+                    this.reg.inc = 1;
+                }
+                //this.reg.t = (this.reg.t & 0x73ff) | ((val & 3) << 10);
+                break;
+            case 1: // 2001
+                this.setConfig2001({
+                    bgColor: (val & 0xe0) >> 5,
+                    sprite: (val & 0x10) > 0,
+                    bg: (val & 0x8) > 0,
+                    spriteMask: (val & 0x4) > 0 ? 1 : 0,
+                    bgMask: (val & 0x2) > 0 ? 1 : 0
+                });
+                break;
+            case 3: // 2003
+                this.reg.spriteAddr = val;
+                break;
+            case 4: // 2004
+                this.writeSprite(this.reg.spriteAddr, val);
+                this.reg.spriteAddr = (this.reg.spriteAddr + 1) & 0xff;
+                break;
+            case 5: // 2005
+                if (this.reg.w) {
+                    // second
+                    this.reg.t = (this.reg.t & 0xc1f) | ((val & 7) << 12) | ((val & 0xf8) << 2);
+                    this.reg.w = 0;
+                } else {
+                    // first
+                    this.reg.t = (this.reg.t & 0x7fe0) | (val >> 3);
+                    this.reg.x = val & 7;
+                    this.reg.w = 1;
+                }
+                break;
+            case 6: // 2006
+                if (this.reg.w) {
+                    // second
+                    this.reg.t = (this.reg.t & 0x7f00) | val;
+                    this.reg.v = this.reg.t;
+                    this.reg.w = 0;
+                } else {
+                    // first
+                    this.reg.t = (this.reg.t & 0xff) | ((val & 0x3f) << 8);
+                    this.reg.w = 1;
+                }
+                break;
+            case 7: // 2007
+                this.write(this.reg.v, val);
+                if (this.reg.v >= 0x2000 && this.reg.v < 0x3f00) {
+                    //console.log(Number(this.reg.v).toString(16) + "<=" + val);
+                }
+                this.reg.v = (this.reg.v + this.reg.inc) & 0x7fff;
+                //this.reg.t = (this.reg.t + this.reg.inc) & 0x7fff;
+                break;
+        }
+    }
+    readPPU(addr: number): number {
+        switch (addr & 7) {
+            case 2: // 2002
+                this.reg.w = 0;
+                let st = this.readState();
+                return (st.scanSprite << 5) | (st.spriteHit ? 0x40 : 0) | (st.vblank ? 0x80 : 0);
+            case 7: // 2007
+                let ret = this.reg.lastVal;
+                this.reg.lastVal = this.read(this.reg.v);
+                this.reg.v = (this.reg.v + this.reg.inc) & 0x7fff;
+                //this.reg.t = (this.reg.t + this.reg.inc) & 0x7fff;
+                return ret;
+        }
+        return 0;
+    }
+
+    private setMirror(): void {
+        if (this.mode == "vertical") {
+            // 垂直ミラー
+            this.nameTable = [this.nameTableBuf[0], this.nameTableBuf[1], this.nameTableBuf[0], this.nameTableBuf[1]];
+        } else if (this.mode == "horizontal") {
+            // 水平ミラー
+            this.nameTable = [this.nameTableBuf[0], this.nameTableBuf[0], this.nameTableBuf[1], this.nameTableBuf[1]];
+        } else if (this.mode == "one0") {
+            // １画面
+            this.nameTable = [this.nameTableBuf[0], this.nameTableBuf[0], this.nameTableBuf[0], this.nameTableBuf[0]];
+        } else if (this.mode == "one3") {
+            // １画面
+            this.nameTable = [this.nameTableBuf[1], this.nameTableBuf[1], this.nameTableBuf[1], this.nameTableBuf[1]];
+        } else {
+            // ４画面
+            this.nameTable = [this.nameTableBuf[0], this.nameTableBuf[1], this.nameTableBuf[2], this.nameTableBuf[3]];
+        }
+    }
     public reset(): void {
+        this.reg = {
+            t: 0,
+            v: 0,
+            w: 0,
+            x: 0,
+            inc: 1,
+            spriteAddr: 0,
+            lastVal: 0,
+            readState: false
+        };
         this.config2000 = {
             bgPattern: 0,
             spritePattern: 0,
@@ -155,28 +278,13 @@ class FamPPUImpl implements IFamPPU {
             bgColor: 0
         };
         this.pattern = [new Uint8Array(0x1000), new Uint8Array(0x1000)];
-        this.nameTable = [new Uint8Array(0x400), null, null, new Uint8Array(0x400)];
-        if (this.mode == "vertical") {
-            // 垂直ミラー
-            this.nameTable[1] = this.nameTable[3];
-            this.nameTable[2] = this.nameTable[0];
-        } else if (this.mode == "horizontal") {
-            // 水平ミラー
-            this.nameTable[1] = this.nameTable[0];
-            this.nameTable[2] = this.nameTable[3];
-        } else {
-            // ４画面
-            this.nameTable[1] = new Uint8Array(0x400);
-            this.nameTable[2] = new Uint8Array(0x400);
-        }
+        this.setMirror();
         this.palette = new Uint8Array(0x20);
         this.state = {
             scanSprite: 0,
             spriteHit: false,
             vblank: false
         };
-        this.scrollX = 0;
-        this.scrollY = 0;
         this.lastBgColor = -1;
         // dummy
         /*
@@ -219,7 +327,12 @@ class FamPPUImpl implements IFamPPU {
     write(addr: number, val: any): void {
         if (typeof val == "number") {
             let buf = this.getBuf(addr);
-            buf.buf[buf.index] = val;
+            if (addr >= 0x3f00 && (addr & 15) == 0) {
+                // mirror
+                buf.buf[buf.index | 16] = val;
+            } else {
+                buf.buf[buf.index] = val;
+            }
         } else if (Array.isArray(val) || val instanceof Uint8Array) {
             let ix = 0;
             let size = val.length;
@@ -264,17 +377,20 @@ class FamPPUImpl implements IFamPPU {
 
     setConfig2000(config: PPUConfig2000): void {
         this.config2000 = Object.assign({}, this.config2000, config);
+        this.reg.t = (this.reg.t & 0x73ff) | ((this.config2000.nameTable & 3) << 10);
     }
     setConfig2001(config: PPUConfig2001): void {
         this.config2001 = Object.assign({}, this.config2001, config);
         this.checkPalette();
     }
     setScroll(sx: number, sy: number): void {
-        this.scrollX = sx & 255;
-        this.scrollY = sy & 255;
+        this.reg.w = 0;
+        this.reg.x = sx & 7;
+        this.reg.t = (sx >> 3) | ((sy & 7) << 12) | ((sy & 0xf8) << 2);
     }
     readState(): PPUState {
         let res = Object.assign({}, this.state);
+        this.reg.readState = true;
         //this.state.vblank = false;
         return res;
     }
@@ -314,70 +430,121 @@ class FamPPUImpl implements IFamPPU {
         }
     }
 
+    public preScanLine(line: number): void {
+        if (this.config2001.bg || this.config2001.sprite) {
+            if (line == 0) {
+                this.reg.v = (this.reg.v & ~0x7be0) | (this.reg.t & 0x7be0);
+                //this.reg.v = this.reg.t;
+            } else if (line < 240) {
+                this.reg.v = (this.reg.v & ~0x41f) | (this.reg.t & 0x41f);
+            }
+        }
+        if (line == 241) {
+            this.state.vblank = true;
+            this.reg.readState = false;
+            //this.state.spriteHit = false;
+        } else if (line == 261) {
+            if (this.reg.readState) {
+                this.state.vblank = false;
+            }
+            this.state.spriteHit = false;
+            this.nextSpriteHit = false;
+        } else if (line < 240 && this.state.vblank && this.reg.readState) {
+            this.state.vblank = false;
+        }
+    }
+
     public scanLine(buf: Uint32Array, line: number): void {
         this.state.spriteHit = this.nextSpriteHit;
-        if (line >= 8 && line < 232) {
-            // BG
-            if (buf) {
-                // 設定する
-                //let bg = this.getColor(this.palette[16] & 63);
-                let bg = this.getColor(this.palette[0] & 63);
-                let nmix = this.config2000.nameTable;
-                let yy = line + this.scrollY;
-                if (yy >= 240) {
-                    yy -= 240;
-                    nmix ^= 2;
-                }
-                let attr = 0x3c0 + (yy >> 5) * 8;
-                let base = (yy & 0x10) >> 2;
-                let pal: number[] = [];
-                for (let ax = 0; ax < 8; ax++) {
-                    let p = this.nameTable[nmix][attr + ax];
-                    pal[ax * 2] = (p >> base) & 3;
-                    pal[ax * 2 + 1] = (p >> (base + 2)) & 3;
-                    p = this.nameTable[nmix ^ 1][attr + ax];
-                    pal[ax * 2 + 16] = (p >> base) & 3;
-                    pal[ax * 2 + 17] = (p >> (base + 2)) & 3;
-                }
-                let ly = yy >> 3;
-                let dy = yy % 8;
-                let bufix = (line - 8) << 8;
-                for (let lx = (this.scrollX >> 3); lx < 64; lx++) {
-                    let ch = this.nameTable[nmix ^ (lx < 32 ? 0 : 1)][(ly << 5) | (lx & 31)];
-                    let pat = this.getLinePattern(this.config2000.bgPattern, ch, dy);
-                    let palix = pal[lx >> 1] << 2;
-                    for (let ax = 0; ax < 8; ax++) {
-                        let x = (lx << 3) + ax - this.scrollX;
-                        if (x < 0) {
-                            continue;
-                        } else if (x >= 256) {
-                            lx = 64;
-                            break;
+        if (this.config2001.bg) {
+            if (line >= 8 && line < 232) {
+                // BG
+                if (buf) {
+                    // 設定する
+                    //let bg = this.getColor(this.palette[16] & 63);
+                    let bufix = (line - 8) << 8;
+                    let bg = this.getColor(this.palette[16] & 63);
+                    let dy = this.reg.v >> 12;
+                    let pat: number[];
+                    let pal: number[] = [0, 0, 0];
+                    let dx = this.reg.x;
+                    let palix = 0;
+                    for (let x = 0; x < 256; x++) {
+                        if (x == 0 || (dx == 0 && (this.reg.v & 3) == 0)) {
+                            // pal
+                            //let p = this.nameTable[(this.reg.v >> 10) & 3][0x3c0 | ((this.reg.v >> 4) & 0x38) | ((this.reg.v >> 2) & 7)];
+                            let p = this.read(0x23c0 | (this.reg.v & 0xc00) | ((this.reg.v >> 4) & 0x38) | ((this.reg.v >> 2) & 7));
+                            let base = (this.reg.v & 0x40) >> 4;
+                            pal[0] = (p >> base) & 3;
+                            pal[2] = (p >> (base + 2)) & 3;
                         }
-                        if (this.spriteBuf[x] & 0x80) {
-                            // スプライト
-                            buf[bufix + x] = this.getColor(this.spriteBuf[x] & 63);
-                        } else if (this.config2001.bg && pat[ax] && x >= 8 - this.config2001.bgMask * 8) {
-                            // BG
-                            buf[bufix + x] = this.getColor(this.palette[palix + pat[ax]]);
-                        } else if (this.spriteBuf[x]) {
-                            // スプライト
-                            buf[bufix + x] = this.getColor(this.spriteBuf[x] & 63);
+                        if (x == 0 || dx == 0) {
+                            // pat
+                            let ch = this.nameTable[(this.reg.v >> 10) & 3][this.reg.v & 0x3ff];
+                            pat = this.getLinePattern(this.config2000.bgPattern, ch, dy);
+                            palix = pal[this.reg.v & 2] << 2;
+                        }
+                        if (x < 8 && !this.config2001.bgMask) {
+                            buf[bufix | x] = bg;
                         } else {
-                            // none
-                            buf[bufix + x] = bg;
+                            if (this.spriteBuf[x] & 0x80) {
+                                buf[bufix | x] = this.getColor(this.spriteBuf[x]);
+                            } else if (pat[dx]) {
+                                buf[bufix | x] = this.getColor(this.palette[palix + pat[dx]]);
+                            } else if (this.spriteBuf[x] & 0x40) {
+                                buf[bufix | x] = this.getColor(this.spriteBuf[x]);
+                            } else {
+                                buf[bufix | x] = bg;
+                            }
+                        }
+                        dx++;
+                        if (dx & 8) {
+                            dx = 0;
+                            if ((this.reg.v & 0x1f) == 31) {
+                                this.reg.v &= ~0x1f;
+                                this.reg.v ^= 0x400;
+                            } else {
+                                this.reg.v++;
+                            }
                         }
                     }
                 }
             }
+        } else if (line >= 8 && line < 232) {
+            // BG
+            if (buf) {
+                // 設定する
+                let bufix = (line - 8) << 8;
+                let bg = this.getColor(this.palette[16] & 63);
+                for (let x = 0; x < 256; x++) {
+                    buf[bufix | x] = bg;
+                }
+            }
+        }
+        if ((this.config2001.bg || this.config2001.sprite) && line < 240) {
+            this.reg.v = (this.reg.v & ~0x41f) | (this.reg.t & 0x41f);
+            if ((this.reg.v & 0x7000) != 0x7000) {
+                this.reg.v += 0x1000;
+            } else {
+                this.reg.v &= 0xfff;
+                let y = (this.reg.v & 0x3e0) >> 5;
+                if (y == 29) {
+                    y = 0;
+                    this.reg.v ^= 0x800;
+                } else if (y == 31) {
+                    y = 0;
+                } else {
+                    y++;
+                }
+                this.reg.v = (this.reg.v & ~0x3e0) | (y << 5);
+            }
         }
         let ly = (line + 1) % 262;
         if (ly < 240) {
-            if (ly == 0) {
-                this.state.spriteHit = false;
-                this.nextSpriteHit = false;
-            }
             // Sprite
+            if (!this.config2001.sprite) {
+                return;
+            }
             let count = 0;
             let sz = (this.config2000.spriteSize << 3) + 8;
             this.state.scanSprite = 0;
@@ -405,9 +572,13 @@ class FamPPUImpl implements IFamPPU {
                             dy = sz - 1 - dy;
                         }
                         let ch = this.spriteTable[(i << 2) + 1];
+                        if (this.config2000.spriteSize) {
+                            // スプライト16だとこうするらしい
+                            ch &= ~1;
+                        }
                         if (dy & 8) {
                             // TODO ++の方が正解？
-                            ch ^= 1;
+                            ch++;
                             dy &= 7;
                         }
                         let pat = this.getLinePattern(this.config2000.spritePattern, ch, dy);
@@ -443,13 +614,6 @@ class FamPPUImpl implements IFamPPU {
                         }
                     }
                 }
-            }
-        } else {
-            if (line == 240) {
-                this.state.vblank = true;
-                //this.state.spriteHit = false;
-            } else if (line == 261) {
-                this.state.vblank = false;
             }
         }
     }
@@ -564,8 +728,8 @@ export class FamWorkerImpl {
 
     public reset(): void {
         this.initType = "reset";
-        this.famPpu = new FamPPUImpl();
-        this.famApu = new FamAPUImpl();
+        this.famPpu.reset();
+        this.famApu.reset();
     }
 
     public execute(req: FamRequestMsg): FamResponseMsg {
@@ -574,6 +738,8 @@ export class FamWorkerImpl {
             return null;
         } else if (req.type == "shutdown") {
             return null;
+        } else if (req.type == "reset") {
+            this.reset();
         }
         let buf: Uint32Array;
         if (req.type == "frame") {
@@ -603,6 +769,16 @@ export class FamWorkerImpl {
                     button: this.button
                 });
             }
+            this.famPpu.preScanLine(line);
+            // HBlank
+            if (this.famRom.preScanLine) {
+                this.famRom.preScanLine({
+                    ppu: this.famPpu,
+                    apu: this.famApu,
+                    button: this.button
+                }, line);
+            }
+            this.famPpu.scanLine(buf, line);
             // HBlank
             if (this.famRom.hBlank) {
                 this.famRom.hBlank({
@@ -611,7 +787,6 @@ export class FamWorkerImpl {
                     button: this.button
                 }, line);
             }
-            this.famPpu.scanLine(buf, line);
             switch (line) {
                 case 0:
                 case 66:
@@ -667,10 +842,6 @@ const lengthIndexList = [
     0x04, 0x50, 0x06, 0xa0, 0x08, 0x3c, 0x0a, 0x0e, 0x0c, 0x1a, 0x0e,
     0x0c, 0x10, 0x18, 0x12, 0x30, 0x14, 0x60, 0x16, 0xc0, 0x18, 0x48,
     0x1a, 0x10, 0x1c, 0x20, 0x1e
-];
-const noiseTimeIndex = [
-    4, 8, 16, 32, 64, 96, 128, 160, 202,
-    254, 380, 508, 762, 1016, 2034, 4068
 ];
 
 const squareSampleDataList = [
@@ -798,21 +969,30 @@ class SquareSoundImpl implements ISquareSound {
         }
         return this;
     }
-    setTimerLow(row: number): ISquareSound {
-        this.nextTimer = {
-            timer: (((this.timerCounter - 1) & 0xff00) | (row & 255)) + 1,
-            length: this.lengthCounter
+    setTimerLow(low: number): ISquareSound {
+        if (this.nextTimer) {
+            this.nextTimer.timer = (((this.nextTimer.timer - 1) & 0xff00) | low) + 1;
+        } else if (this.timerCounter > 0) {
+            this.nextTimer = {
+                timer: (((this.timerCounter - 1) & 0xff00) | (low & 255)) + 1,
+                length: this.lengthCounter
+            }
+        } else {
+            this.nextTimer = {
+                timer: low + 1,
+                length: this.lengthCounter
+            }
         }
+        /*
         if (this.nextTimer.timer < 8 || this.nextTimer.timer > 0x7ff) {
             this.lengthCounter = 0;
             this.nextTimer = null;
         }
-        /*
-        if (this.envelopeData) {
-            this.envelopeData.count = this.envelopeData.period;
-            this.volume = 15;
-        }
-        */
+            if (this.envelopeData) {
+                this.envelopeData.count = this.envelopeData.period;
+                this.volume = 15;
+            }
+            */
         return this;
     }
     setSweep(enableFlag: boolean, period: number, mode: number, value: number): ISquareSound {
@@ -1012,9 +1192,18 @@ class TriangleSoundImpl implements ITriangleSound {
         return this;
     }
     setTimerLow(low: number): ITriangleSound {
-        this.nextTimer = {
-            length: this.lengthCounter,
-            timer: (((this.timerCounter - 1) & 0xff00) | low) + 1
+        if (this.nextTimer) {
+            this.nextTimer.timer = (((this.nextTimer.timer - 1) & 0xff00) | low) + 1;
+        } else if (this.timerCounter > 0) {
+            this.nextTimer = {
+                length: this.lengthCounter,
+                timer: (((this.timerCounter - 1) & 0xff00) | low) + 1
+            }
+        } else {
+            this.nextTimer = {
+                length: this.lengthCounter,
+                timer: low + 1
+            }
         }
         return this;
     }
@@ -1123,7 +1312,7 @@ class NoiseSoundImpl implements INoiseSound {
     setRandomMode(shortFlag: number, timerIndex: number): INoiseSound {
         this.nextTimer = {
             mode: shortFlag,
-            timer: noiseTimeIndex[timerIndex]
+            timer: noiseTimerIndex[timerIndex]
         }
         return this;
     }
@@ -1222,26 +1411,128 @@ class NoiseSoundImpl implements INoiseSound {
 
 }
 
+const dmcTimerIndex = [
+    0x1ac, 0x17c, 0x154, 0x140, 0x11e, 0x0fe, 0x0e2, 0x0d6,
+    0x0be, 0x0a0, 0x08e, 0x080, 0x06a, 0x054, 0x048, 0x036
+];
+
 class DeltaSoundImpl implements IDeltaSound {
     private output = new Uint8Array(SAMPLE_RATE);
+    private sample: {
+        buffer: number;
+        delta: number;
+        shift: number;
+        count: number;
+        reader?: (index: number, last?: boolean) => number;
+    };
+    private counter: {
+        loop: boolean;
+        index: number;
+        count: number;
+    };
+    private nextPeriod: {
+        loop: boolean;
+        timer: number;
+    };
+    private timerCounter: number = 0;
+    private timerOffset: number = 0;
+    private enableFlag: boolean;
+
+    constructor() {
+        this.counter = {
+            loop: false,
+            index: 0,
+            count: 0
+        };
+        this.sample = {
+            buffer: -1,
+            delta: 0,
+            shift: 0,
+            count: 0
+        };
+    }
 
     setPeriod(loopFlag: boolean, periodIndex: number): IDeltaSound {
+        this.nextPeriod = {
+            loop: loopFlag,
+            timer: dmcTimerIndex[periodIndex & 15]
+        };
         return this;
     }
     setDelta(delta: number): IDeltaSound {
+        this.sample.delta = delta & 0x7f;
         return this;
     }
-    setSample(data: number[] | Uint8Array, start: number, length: number): IDeltaSound {
+    setSample(reader: (index: number, last?: boolean) => number, count: number): IDeltaSound {
+        this.sample.reader = reader;
+        this.counter.count = count * 0x10 + 1;
+        this.counter.index = 0;
         return this;
     }
     setEnabled(flag: boolean): IDeltaSound {
+        this.enableFlag = flag;
         return this;
     }
     isPlaing(): boolean {
-        return false;
+        return this.sample.buffer >= 0;
     }
 
     public getOutput(l: boolean, e: boolean): Uint8Array {
+        if (this.nextPeriod) {
+            if (this.timerCounter) {
+                this.timerOffset = Math.floor(this.timerOffset / this.timerCounter * this.nextPeriod.timer);
+            }
+            this.counter.loop = this.nextPeriod.loop;
+            this.timerCounter = this.nextPeriod.timer;
+            this.nextPeriod = null;
+        }
+        let size = this.timerCounter;
+        for (let i = 0; i < SAMPLE_RATE; i++) {
+            if (this.sample.buffer < 0) {
+                this.output[i] = 0;
+            } else {
+                this.output[i] = this.sample.delta;
+            }
+            if (size > 4) {
+                this.timerOffset += addClock[i];
+                while (this.timerOffset >= size) {
+                    if (this.sample.count > 0) {
+                        this.sample.count--;
+                    } else {
+                        this.sample.buffer = -1;
+                    }
+                    if (this.sample.buffer < 0) {
+                        // サンプルが空
+                        if (this.sample.reader) {
+                            if (this.counter.index < this.counter.count) {
+                                this.sample.buffer = this.sample.reader(this.counter.index, !this.counter.loop && this.counter.index + 1 == this.counter.count);
+                                this.sample.shift = this.sample.buffer;
+                                this.sample.count = 7;
+                                this.counter.index++;
+                                if (this.counter.loop && this.counter.index >= this.counter.count) {
+                                    this.counter.index = 0;
+                                }
+                            } else {
+                                this.sample.buffer = -1;
+                            }
+                        } else {
+                            // silence
+                        }
+                    }
+                    if (this.sample.buffer >= 0) {
+                        if (this.sample.shift & 1) {
+                            if (this.sample.delta < 126) {
+                                this.sample.delta += 2;
+                            }
+                        } else if (this.sample.delta > 1) {
+                            this.sample.delta -= 2;
+                        }
+                        this.sample.shift >>= 1;
+                    }
+                    this.timerOffset -= size;
+                }
+            }
+        }
         return this.output;
     }
 
@@ -1309,6 +1600,7 @@ class FamAPUImpl implements IFamAPU {
         let offset = index * SAMPLE_RATE;
         for (let i = 0; i < SAMPLE_RATE; i++) {
             data[offset + i] = Math.min(255, (pulse_table[pl1[i] + pl2[i]] + tnd_table[3 * tri[i] + 2 * noi[i] + dmc[i]]) * 255);
+            //data[offset + i] = dmc[i];
         }
         if (ret == 3 && this.irqCallback && !this.stepMode) {
             this.irqCallback(this);

@@ -2,5 +2,7 @@
 <fam-canvas [machine]="famMachine" ppuStyle="border: 1px solid black"></fam-canvas>
 
 <input #nesFile type="file" (change)="onFileChange(nesFile.files)">
+<label><input type="checkbox" (change)="workerFlag=$event.checked" [checked]="workerFlag">バックグラウンド</label>
 <button (click)="onStart()">START</button>
 <button (click)="onStop()">STOP</button>
+<button (click)="onReset()">RESET</button>

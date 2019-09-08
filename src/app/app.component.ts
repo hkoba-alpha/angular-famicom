@@ -36,6 +36,7 @@ let myCode = function () {
 export class AppComponent implements OnInit {
   title = 'famicom';
   famMachine: FamMachine;
+  workerFlag: boolean = true;
 
   constructor(private loader: NgModuleFactoryLoader, private famService: FamCanvasService) {
 
@@ -78,9 +79,10 @@ export class AppComponent implements OnInit {
     this.famMachine.setInitParam({ msg: "test param", data: [1,2,3]});
     */
     this.famMachine = this.famService.createMachine(NesEmuRom, false);
-    //this.famMachine.setInitParam("/assets/smario.nes");
+    this.famMachine.setInitParam("/assets/smario.nes");
     //this.famMachine.setInitParam("/assets/dq1.nes");
 
+    /*
     let req = new XMLHttpRequest();
     req.open('GET', "/assets/dq1.nes", true);
     req.responseType = "arraybuffer";
@@ -95,6 +97,7 @@ export class AppComponent implements OnInit {
       }
     };
     req.send(null);
+    */
 
   }
 
@@ -114,11 +117,17 @@ export class AppComponent implements OnInit {
       let reader = new FileReader();
       reader.onload = ev => {
         let data = new Uint8Array(reader.result as any);
-        this.famMachine = this.famService.createMachine(NesEmuRom, false);
+        this.famMachine = this.famService.createMachine(NesEmuRom, this.workerFlag);
         this.famMachine.setInitParam(data);
       };
       reader.readAsArrayBuffer(list[0]);
     }
     console.log(list);
+  }
+
+  onReset(): void {
+    if (this.famMachine) {
+      this.famMachine.reset();
+    }
   }
 }
