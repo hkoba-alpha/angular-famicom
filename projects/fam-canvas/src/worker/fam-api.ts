@@ -53,9 +53,12 @@ export interface IFamPPU {
     setScroll(sx: number, sy: number): void;
     readState(): PPUState;
 
-    setMirrorMode(mode: "vertical" | "horizontal" | "four"): void;
+    setMirrorMode(mode: "vertical" | "horizontal" | "four" | "one0" | "one3"): void;
 
     reset(): void;
+
+    writePPU(addr: number, val: number): void;
+    readPPU(addr: number): number;
 }
 
 /**
@@ -65,6 +68,8 @@ export interface ISquareSound {
     setVolume(duty: number, halt: boolean, volume: number): ISquareSound;
     setEnvelope(duty: number, loop: boolean, period: number): ISquareSound;
     setTimer(lenIndex: number, timer: number): ISquareSound;
+    // 下位8bitを設定する
+    setTimerLow(low: number): ISquareSound;
     /**
      * Sweep設定
      * @param enableFlag 有効フラグ
@@ -73,6 +78,9 @@ export interface ISquareSound {
      * @param value スイープ量[0-7]
      */
     setSweep(enableFlag: boolean, period: number, mode: number, value: number): ISquareSound;
+
+    setEnabled(flag: boolean): ISquareSound;
+    isPlaing(): boolean;
 }
 
 /**
@@ -83,8 +91,45 @@ export interface ITriangleSound {
     setLinear(loop: boolean, lineCount: number): ITriangleSound;
 
     setTimer(lenIndex: number, timerCount: number): ITriangleSound;
+    setTimerLow(low: number): ITriangleSound;
 
-    setTimerCount(count: number): ITriangleSound;
+    setEnabled(flag: boolean): ITriangleSound;
+    isPlaing(): boolean;
+}
+
+export interface INoiseSound {
+    setVolume(stopFlag: boolean, volume: number): INoiseSound;
+
+	/**
+	 * エンベロープを設定する. ボリュームは無効となる.
+	 * 
+	 * @param loopFlag
+	 *            ループして続けるかのフラグ
+	 * @param period
+	 *            周期:[0-15]
+	 * @return
+	 */
+    setEnvelope(loopFlag: boolean, period: number): INoiseSound;
+
+    setRandomMode(shortFlag: number, timerIndex: number): INoiseSound;
+
+    setLength(lengthIndex: number): INoiseSound;
+
+    setEnabled(flag: boolean): INoiseSound;
+    isPlaing(): boolean;
+}
+
+export interface IDeltaSound {
+
+    setPeriod(loopFlag: boolean, periodIndex: number): IDeltaSound;
+
+    setDelta(delta: number): IDeltaSound;
+
+    setSample(reader: (index: number, last?: boolean) => number, count: number): IDeltaSound;
+
+    setEnabled(flag: boolean): IDeltaSound;
+
+    isPlaing(): boolean;
 }
 
 /**
@@ -92,7 +137,11 @@ export interface ITriangleSound {
  */
 export interface IFamAPU {
     // mode: 0=4Step, 1=5Step
-    setMode(mode: number): void;
+    setMode(mode: number, irq?: (apu: IFamAPU) => void): IFamAPU;
+    readonly square: [ISquareSound, ISquareSound];
+    readonly triangle: ITriangleSound;
+    readonly noise: INoiseSound;
+    readonly delta: IDeltaSound;
 }
 
 /**
@@ -101,15 +150,39 @@ export interface IFamAPU {
 export interface FamData {
     ppu: IFamPPU;
     apu: IFamAPU;
+    button: number[];
 }
+
+/**
+ * 永続的データ管理
+ */
+export interface IFamStorage {
+    size(): number;
+
+    write(addr: number, val: number): void;
+    write(addr: number, val: number[]): void;
+    write(addr: number, val: Uint8Array): void;
+
+    read(addr: number): number;
+    read(addr: number, size: number): Uint8Array;
+}
+
+/**
+ * 永続的データをサポートするかをチェックする
+ */
+export type FamStorageCheck = (key: string, size: number) => Promise<IFamStorage>;
 
 /**
  * 実装
  */
 export interface IFamROM {
+    // 0-255 ppu cycleのrender
+    preScanLine?(data: FamData, line: number): void;
+    // 256-340 ppu cycleのhblank
     hBlank?(data: FamData, line: number): void;
     vBlank?(data: FamData): void;
     init?(data: FamData, type: "power" | "reset", param?: any): void;
+    checkStorage?(check: FamStorageCheck): void;
 }
 
 /**

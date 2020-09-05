@@ -21,7 +21,11 @@
             "assets": [
               "src/favicon.ico",
               "src/assets",
-              { "glob": "**/*", "input": "projects/fam-canvas/src/assets", "output": "assets" }
+              {
+                "glob": "**/*",
+                "input": "projects/fam-canvas/src/assets",
+                "output": "assets"
+              }
             ],
             "styles": [
               "src/styles.css"
@@ -79,7 +83,11 @@
             "assets": [
               "src/favicon.ico",
               "src/assets",
-              { "glob": "**/*", "input": "projects/fam-canvas/src/assets", "output": "assets" }
+              {
+                "glob": "**/*",
+                "input": "projects/fam-canvas/src/assets",
+                "output": "assets"
+              }
             ]
           }
         },
@@ -172,5 +180,8 @@
       }
     }
   },
-  "defaultProject": "famicom"
+  "defaultProject": "famicom",
+  "cli": {
+    "analytics": false
+  }
 }

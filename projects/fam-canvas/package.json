@@ -7,6 +7,9 @@
   },
   "scripts": {
     "build-worker": "ng run fam-canvas:build-worker",
-    "dev-worker": "ng run fam-canvas:dev-worker"    
+    "dev-worker": "ng run fam-canvas:dev-worker"
+  },
+  "dependencies": {
+    "md5": "^2.2.1"
   }
 }

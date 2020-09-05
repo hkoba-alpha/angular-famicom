@@ -1,8 +1,5 @@
 import { Component, NgModuleFactoryLoader, OnInit } from '@angular/core';
-import { Myrom } from './fam-rom/myrom';
 import { FamCanvasService, FamMachine } from 'projects/fam-canvas/src/public_api';
-import { IFamROM, FamData } from 'projects/fam-canvas/src/worker/fam-api';
-import FamUtil from 'projects/fam-canvas/src/worker/fam-util';
 import { NesEmuRom } from 'projects/fam-canvas/src/lib/rom/nes-emu-rom';
 
 let myCode = function () {
@@ -39,6 +36,7 @@ let myCode = function () {
 export class AppComponent implements OnInit {
   title = 'famicom';
   famMachine: FamMachine;
+  workerFlag: boolean = true;
 
   constructor(private loader: NgModuleFactoryLoader, private famService: FamCanvasService) {
 
@@ -80,8 +78,27 @@ export class AppComponent implements OnInit {
     }, true);
     this.famMachine.setInitParam({ msg: "test param", data: [1,2,3]});
     */
-   this.famMachine = this.famService.createMachine(NesEmuRom, false);
-   this.famMachine.setInitParam("/assets/smario.nes");
+    this.famMachine = this.famService.createMachine(NesEmuRom, false);
+    this.famMachine.setInitParam("/assets/smario.nes");
+    //this.famMachine.setInitParam("/assets/dq1.nes");
+
+    /*
+    let req = new XMLHttpRequest();
+    req.open('GET', "/assets/dq1.nes", true);
+    req.responseType = "arraybuffer";
+    req.onreadystatechange = () => {
+      if (req.readyState == 4) {
+        // Complete
+        if (req.status == 200) {
+          this.famMachine.setInitParam(new Uint8Array(req.response));
+        } else {
+          // TODO
+        }
+      }
+    };
+    req.send(null);
+    */
+
   }
 
   onStart(): void {
@@ -90,67 +107,27 @@ export class AppComponent implements OnInit {
     }
   }
   onStop(): void {
-    if (this.audioSrc) {
-      this.audioSrc.stop();
-    }
     if (this.famMachine) {
       this.famMachine.stop();
     }
   }
 
-  private audioContext: any;
-  private audioSrc: any;
-  private audioBuf: any;
+  onFileChange(list: FileList): void {
+    if (list.length) {
+      let reader = new FileReader();
+      reader.onload = ev => {
+        let data = new Uint8Array(reader.result as any);
+        this.famMachine = this.famService.createMachine(NesEmuRom, this.workerFlag);
+        this.famMachine.setInitParam(data);
+      };
+      reader.readAsArrayBuffer(list[0]);
+    }
+    console.log(list);
+  }
 
-  onPlay() {
-    if (!this.audioContext) {
-      this.audioContext = new (window["webkitAudioContext"] || window["AudioContext"])();
-      let ctx = this.audioContext;
-      console.log(ctx.sampleRate);
-      //ctx.sampleRate = 48000;
-      let buf = ctx.createBuffer(1, 22050, 22050);
-      let data = buf.getChannelData(0);
-      for (let i = 0; i < data.length; i++) {
-        if ((i % 100) < 50) {
-          data[i] = 1;
-        } else {
-          data[i] = 0;
-        }
-      }
-      let src = ctx.createBufferSource();
-      console.log(Object.keys(src));
-      src.buffer = buf;
-      src.loop = false;
-      src.connect(ctx.destination);
-      src.start(0);
-      this.audioBuf = data;
-      this.audioSrc = src;
-    } else {
-      let ctx = this.audioContext;
-      let buf = ctx.createBuffer(1, 22050, 22050);
-      let data = buf.getChannelData(0);
-      for (let i = 0; i < data.length; i++) {
-        if ((i % 100) < 50) {
-          data[i] = 1;
-        } else {
-          data[i] = 0;
-        }
-      }
-      let src = ctx.createBufferSource();
-      console.log(Object.keys(src));
-      src.buffer = buf;
-      src.loop = false;
-      src.connect(ctx.destination);
-      this.audioBuf = data;
-      this.audioSrc = src;
-      for (let i = 0; i < data.length; i++) {
-        if ((i % 80) < 40) {
-          data[i] = 1;
-        } else {
-          data[i] = 0;
-        }
-      }
-      src.start(0);
+  onReset(): void {
+    if (this.famMachine) {
+      this.famMachine.reset();
     }
   }
 }
