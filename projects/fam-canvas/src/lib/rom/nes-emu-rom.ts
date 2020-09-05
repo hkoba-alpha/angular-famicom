@@ -225,7 +225,7 @@ export var NesEmuRom = function (util: FamUtil) {
         }
         private fixChrBank(memory: FamMemory, idx: number): void {
             if (this.lastChrBank[idx] != this.chrBank[idx]) {
-                console.log("CHR[" + idx + "]=" + this.chrBank[idx]);
+                //console.log("CHR[" + idx + "]=" + this.chrBank[idx]);
                 memory.famData.ppu.write(idx * 0x400, this.chrList[this.chrBank[idx] & this.chrMask]);
                 this.lastChrBank[idx] = this.chrBank[idx];
             }
@@ -243,12 +243,13 @@ export var NesEmuRom = function (util: FamUtil) {
             this.fixPrgBank(memory);
         }
         private setChrBankLow(memory: FamMemory, idx: number, val: number): void {
-            this.chrBank[idx] = (this.chrBank[idx] & 0xf0) | (val & 0xf);
+            this.chrBank[idx] = (this.chrBank[idx] & 0x1f0) | (val & 0xf);
             this.fixChrBank(memory, idx);
         }
         private setChrBankHigh(memory: FamMemory, idx: number, val: number): void {
-            this.chrBank[idx] = (this.chrBank[idx] & 0x0f) | ((val & 0xf) << 4);
+            this.chrBank[idx] = (this.chrBank[idx] & 0x0f) | ((val & 0x1f) << 4);
             this.fixChrBank(memory, idx);
+            //console.log("Chr-High[" + idx + "]=" + val);
         }
         private setMirroring(memory: FamMemory, val: number): void {
             switch (val & 3) {
@@ -269,8 +270,8 @@ export var NesEmuRom = function (util: FamUtil) {
 
         init(memory: FamMemory): void {
             super.init(memory);
-            memory.setPrgMemory(0x8000, this.nesRom.getPrg(0));
-            memory.setPrgMemory(0xc000, this.nesRom.getPrg(this.nesRom.prgSize - 1));
+            memory.setPrgMemory(0xe000, this.prgList[this.prgList.length - 1]);
+            this.fixPrgBank(memory);
         }
         write(memory: FamMemory, addr: number, val: number): void {
             //console.log("WRITE:" + val);

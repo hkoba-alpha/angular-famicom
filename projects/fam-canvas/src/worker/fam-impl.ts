@@ -129,7 +129,10 @@ class FamPPUImpl implements IFamPPU {
     private rgbColor: Uint32Array;
     private lastBgColor: number = -1;
 
-    private nextSpriteHit: boolean;
+    private nextSpriteHit: {
+        x: number;
+        pattern: number[]
+    };
 
     private reg: {
         v: number;
@@ -448,18 +451,19 @@ class FamPPUImpl implements IFamPPU {
                 this.state.vblank = false;
             }
             this.state.spriteHit = false;
-            this.nextSpriteHit = false;
+            this.nextSpriteHit = null;
         } else if (line < 240 && this.state.vblank && this.reg.readState) {
             this.state.vblank = false;
         }
     }
 
     public scanLine(buf: Uint32Array, line: number): void {
-        this.state.spriteHit = this.nextSpriteHit;
+        let hitCheck = false;
         if (this.config2001.bg) {
             if (line >= 8 && line < 232) {
                 // BG
                 if (buf) {
+                    hitCheck = true;
                     // 設定する
                     //let bg = this.getColor(this.palette[16] & 63);
                     let bufix = (line - 8) << 8;
@@ -496,6 +500,13 @@ class FamPPUImpl implements IFamPPU {
                             } else {
                                 buf[bufix | x] = bg;
                             }
+                            if (!this.state.spriteHit && this.nextSpriteHit) {
+                                if (x >= this.nextSpriteHit.x && x < this.nextSpriteHit.x + 8) {
+                                    if (this.nextSpriteHit.pattern[x - this.nextSpriteHit.x] && pat[dx]) {
+                                        this.state.spriteHit = true;
+                                    }
+                                }
+                            }
                         }
                         dx++;
                         if (dx & 8) {
@@ -522,6 +533,17 @@ class FamPPUImpl implements IFamPPU {
             }
         }
         if ((this.config2001.bg || this.config2001.sprite) && line < 240) {
+            if (!hitCheck && !this.state.spriteHit && this.nextSpriteHit) {
+                if (this.config2001.bg) {
+                    // TODO 本来は背景との重なりをチェック
+                    for (let i = 0; i < 8; i++) {
+                        if (this.nextSpriteHit.pattern[i]) {
+                            this.state.spriteHit = true;
+                            break;
+                        }
+                    }
+                }
+            }
             this.reg.v = (this.reg.v & ~0x41f) | (this.reg.t & 0x41f);
             if ((this.reg.v & 0x7000) != 0x7000) {
                 this.reg.v += 0x1000;
@@ -560,7 +582,7 @@ class FamPPUImpl implements IFamPPU {
                         break;
                     }
                     if (this.config2001.sprite) {
-                        if ((i > 0 || !this.nextSpriteHit) && (ly < 8 || ly >= 232)) {
+                        if ((i > 0 || !this.state.spriteHit) && (ly < 8 || ly >= 232)) {
                             // 0爆弾以外は範囲外をスキップ
                             continue;
                         }
@@ -582,23 +604,17 @@ class FamPPUImpl implements IFamPPU {
                             dy &= 7;
                         }
                         let pat = this.getLinePattern(this.config2000.spritePattern, ch, dy);
-                        if (i == 0 && !this.nextSpriteHit) {
-                            // チェックする
-                            for (let x = 0; x < pat.length; x++) {
-                                if (pat[x]) {
-                                    this.nextSpriteHit = true;
-                                    break;
-                                }
-                            }
-                            if (ly < 8 || ly >= 232) {
-                                continue;
-                            }
-                        }
+                        let sx = this.spriteTable[(i << 2) + 3];
                         if (flag & 0x40) {
                             // 左右反転
                             pat = pat.reverse();
                         }
-                        let sx = this.spriteTable[(i << 2) + 3];
+                        if (i == 0) {
+                            this.nextSpriteHit = {
+                                x: sx,
+                                pattern: pat
+                            };
+                        }
                         let palix = 0x10 + ((flag & 3) << 2);
                         let mask = (flag & 0x20 ? 0x40 : 0x80);
                         for (let ax = 0; ax < 8; ax++) {
@@ -613,6 +629,8 @@ class FamPPUImpl implements IFamPPU {
                             }
                         }
                     }
+                } else if (i == 0) {
+                    this.nextSpriteHit = null;
                 }
             }
         }
